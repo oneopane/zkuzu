@@ -1,0 +1,56 @@
+version: '3'
+
+vars:
+  ROOT_DIR: {sh: 'pwd'}
+  NUM_CPUS:
+    sh: nproc 2>/dev/null || sysctl -n hw.ncpu
+
+tasks:
+  default:
+    deps: [test]
+
+  help:
+    cmds:
+      - |
+          echo "zkuzu - Zig wrapper for Kuzu graph database"
+          echo
+          echo "Available tasks:"
+          echo "  task build-kuzu  - Build Kuzu library from source (requires cmake)"
+          echo "  task copy-lib    - Copy built library into lib/"
+          echo "  task test        - Run Zig tests"
+          echo "  task example     - Run example program"
+          echo "  task clean       - Clean build artifacts"
+          echo
+          echo "Before using zkuzu, you need to:"
+          echo "  1. task build-kuzu"
+          echo "  2. task copy-lib"
+
+  build-kuzu:
+    desc: Build Kuzu from source
+    dir: ../../../tmp/kuzu
+    cmds:
+      - mkdir -p build
+      - cd build && cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_KUZU_SHELL=OFF -DBUILD_C_API=ON
+      - cd build && make -j{{.NUM_CPUS}}
+    status:
+      - test -f build/src/libkuzu.a
+
+  copy-lib:
+    desc: Copy built Kuzu library into project lib/
+    cmds:
+      - cp ../../../tmp/kuzu/build/src/libkuzu.a {{.ROOT_DIR}}/lib/
+
+  test:
+    desc: Run Zig tests
+    cmds:
+      - zig build test
+
+  example:
+    desc: Run Zig example program
+    cmds:
+      - zig build example
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - rm -rf zig-cache zig-out example.db

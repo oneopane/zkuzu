@@ -1,0 +1,7 @@
+.{
+    .name = .zkuzu,
+    .version = "0.1.0",
+    .fingerprint = 0x3ee2c105cdbe324e,
+    .dependencies = .{},
+    .paths = .{""},
+}
