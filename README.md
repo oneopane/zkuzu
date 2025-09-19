@@ -460,6 +460,18 @@ Build targets:
 - The build wires example targets and tests; see `build.zig` for platform-specific linking.
 - Ensure Kuzu version compatibility and that required `.a` files exist. A small script can verify presence of all static libs prior to build.
 
+## Contributing
+
+Before opening a PR, please see `AGENTS.md` for repository guidelines.
+
+- Dev quickstart
+  - Run tests: `zig build test`
+  - Run examples: `zig build example-basic` (also: prepared/transactions/pool/performance/errors)
+  - Choose provider: `-Dkuzu-provider=prebuilt|local|system|source`
+- Style: run `zig fmt .`; 4-space indentation; keep modules small and cohesive.
+- Commits: use Conventional Commits (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`).
+- PR checklist: description, linked issues, reproduction commands, expected output, OS and provider used. Attach logs if behavior differs across OS.
+
 ## License
 
 This wrapper follows the same license as your zqlite wrapper. Kuzu itself is licensed under the MIT License.

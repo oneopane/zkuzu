@@ -79,7 +79,6 @@ test "arena-backed strings lifetime and leak sanity" {
 }
 
 test "type-safe getters: scalars, nullables, lists, and mismatches" {
-    const zkuzu = @import("../root.zig");
     const a = std.testing.allocator;
     _ = try std.fs.cwd().makeOpenPath("zig-cache/zkuzu-qr-typesafe", .{});
     const db_path = try zkuzu.toCString(a, "zig-cache/zkuzu-qr-typesafe/db");

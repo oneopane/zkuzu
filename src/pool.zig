@@ -148,31 +148,30 @@ pub const Pool = struct {
         }
         if (idx) |pick| {
             var pooled_ptr = &self.connections.items[pick];
-            var tmp = pooled_ptr.conn;
+            const conn_ptr = &pooled_ptr.conn;
             pooled_ptr.in_use = true;
             pooled_ptr.last_used = now;
             self.mutex.unlock();
 
             // Validate outside the lock
-            if (tmp.validate()) |_| {
-                return tmp;
-            } else |_| {
+            conn_ptr.validate() catch {
                 // Attempt recovery then re-validate
-                tmp.recover() catch {};
-                if (tmp.validate()) |_| {
-                    return tmp;
-                }
-                // Replacement path
-                var new_conn = try self.database.connection();
-                // Update pooled slot with the new connection
-                self.mutex.lock();
-                self.connections.items[pick].conn.deinit();
-                self.connections.items[pick].conn = new_conn;
-                self.connections.items[pick].in_use = true;
-                self.connections.items[pick].last_used = std.time.timestamp();
-                self.mutex.unlock();
-                return new_conn;
-            }
+                conn_ptr.recover() catch {};
+                conn_ptr.validate() catch {
+                    // Replacement path
+                    const new_conn = try self.database.connection();
+                    // Update pooled slot with the new connection
+                    self.mutex.lock();
+                    self.connections.items[pick].conn.deinit();
+                    self.connections.items[pick].conn = new_conn;
+                    self.connections.items[pick].in_use = true;
+                    self.connections.items[pick].last_used = std.time.timestamp();
+                    self.mutex.unlock();
+                    return new_conn;
+                };
+                return conn_ptr.*;
+            };
+            return conn_ptr.*;
         }
 
         // Create a new connection if we haven't reached the limit

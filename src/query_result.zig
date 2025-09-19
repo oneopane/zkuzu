@@ -308,14 +308,15 @@ pub const Row = struct {
     /// const maybe_age: ?i64 = try row.get(?i64, 1);
     /// ```
     pub fn get(self: *Row, comptime T: type, index: usize) !T {
+        const is_array = comptime valtypes.TypeInfo.isArray(T);
         // Disallow fixed-size arrays; support slices instead.
-        if (valtypes.TypeInfo.isArray(T)) {
-            @compileError(std.fmt.comptimePrint("Row.get: fixed-size arrays not supported; use slice of '{s}' instead", .{@typeName(valtypes.TypeInfo.arrayChild(T))}));
+        if (is_array) {
+            @compileError("Row.get: fixed-size arrays not supported; use a slice type instead");
         }
 
         // Fetch once from the tuple; `Value` is owned and tied to this row.
         var v = try self.getValue(@intCast(index));
-        const is_opt = valtypes.TypeInfo.isOptional(T);
+        const is_opt = comptime valtypes.TypeInfo.isOptional(T);
         if (v.isNull()) {
             if (is_opt) {
                 v.deinit();
@@ -329,7 +330,7 @@ pub const Row = struct {
         // Convert and free the temporary value unless returning it directly.
         const result = try self._convertValue(T, &v);
         // If returning Value itself (or optional Value already handled above), do not deinit.
-        const return_is_value = T == Value or (valtypes.TypeInfo.isOptional(T) and valtypes.TypeInfo.childOfOptional(T) == Value);
+        const return_is_value = comptime (T == Value or (is_opt and valtypes.TypeInfo.childOfOptional(T) == Value));
         if (!return_is_value) {
             v.deinit();
         }
@@ -350,9 +351,16 @@ pub const Row = struct {
 
     fn _convertValue(self: *Row, comptime T: type, val: *Value) !T {
         const A = self.result._arena.allocator();
+        const is_optional = comptime valtypes.TypeInfo.isOptional(T);
+        const is_bool = comptime valtypes.TypeInfo.isBool(T);
+        const is_signed = comptime valtypes.TypeInfo.isSignedInt(T);
+        const is_unsigned = comptime valtypes.TypeInfo.isUnsignedInt(T);
+        const is_float = comptime valtypes.TypeInfo.isFloat(T);
+        const is_string_like = comptime valtypes.TypeInfo.isStringLike(T);
+        const is_slice = comptime valtypes.TypeInfo.isSlice(T);
 
         // Optional handling: unwrap, but call-site already checked for nulls.
-        if (valtypes.TypeInfo.isOptional(T)) {
+        if (is_optional) {
             const Child = valtypes.TypeInfo.childOfOptional(T);
             const inner: Child = try self._convertValue(Child, val);
             return @as(T, inner);
@@ -365,22 +373,22 @@ pub const Row = struct {
         }
 
         // Scalars
-        if (valtypes.TypeInfo.isBool(T)) {
+        if (is_bool) {
             return try val.toBool();
         }
-        if (valtypes.TypeInfo.isSignedInt(T)) {
+        if (is_signed) {
             const x = try val.toInt();
             return try @import("value.zig").Cast.toInt(T, x);
         }
-        if (valtypes.TypeInfo.isUnsignedInt(T)) {
+        if (is_unsigned) {
             const x = try val.toUInt();
             return try @import("value.zig").Cast.toInt(T, x);
         }
-        if (valtypes.TypeInfo.isFloat(T)) {
+        if (is_float) {
             const x = try val.toFloat();
             return try @import("value.zig").Cast.toFloat(T, x);
         }
-        if (valtypes.TypeInfo.isStringLike(T)) {
+        if (is_string_like) {
             // Disambiguate by actual Kuzu logical type.
             const vt = val.getType();
             return switch (vt) {
@@ -393,7 +401,7 @@ pub const Row = struct {
         }
 
         // Slices (Lists/Arrays): []Child
-        if (valtypes.TypeInfo.isSlice(T)) {
+        if (is_slice) {
             const Elem = valtypes.TypeInfo.sliceChild(T);
             const vt = val.getType();
             if (vt != .List and vt != .Array and vt != .Map) return Error.TypeMismatch;
@@ -401,8 +409,8 @@ pub const Row = struct {
             if (vt == .Map) {
                 // Expect slice of struct { key: K, value: V }
                 const ti = @typeInfo(Elem);
-                if (ti != .Struct) return Error.TypeMismatch;
-                const fields = ti.Struct.fields;
+                if (ti != .@"struct") return Error.TypeMismatch;
+                const fields = ti.@"struct".fields;
                 if (fields.len != 2 or !std.mem.eql(u8, fields[0].name, "key") or !std.mem.eql(u8, fields[1].name, "value")) {
                     return Error.TypeMismatch;
                 }
@@ -437,16 +445,14 @@ pub const Row = struct {
 
         // Struct mapping: Zig struct field names must match Kuzu struct field names
         const ti = @typeInfo(T);
-        if (ti == .Struct) {
+        if (ti == .@"struct") {
             const vt = val.getType();
             switch (vt) {
                 .Struct, .Union, .Node, .Rel, .RecursiveRel => {},
                 else => return Error.TypeMismatch,
             }
             var result: T = undefined;
-            const field_count = ti.Struct.fields.len;
-            var i: usize = 0;
-            inline for (ti.Struct.fields) |f| {
+            inline for (ti.@"struct".fields) |f| {
                 const kuzu_n = try val.getStructFieldCount();
                 var j: u64 = 0;
                 var found = false;
@@ -461,9 +467,7 @@ pub const Row = struct {
                 var child_val = try val.getStructFieldValue(j);
                 defer child_val.deinit();
                 @field(result, f.name) = try self._convertValue(f.type, &child_val);
-                _ = i;
             }
-            _ = field_count;
             return result;
         }
 

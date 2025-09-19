@@ -15,7 +15,7 @@ pub fn main() !void {
     const skip: usize = 0;
     var fail: usize = 0;
 
-    const start_all = try std.time.Timer.start();
+    var start_all = try std.time.Timer.start();
     for (test_list, 0..) |test_fn, i| {
         var status: []const u8 = "PASS";
 

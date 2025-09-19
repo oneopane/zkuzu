@@ -52,28 +52,33 @@ test "integration: end-to-end workflow with pool and prepared statements" {
     defer pool.deinit();
 
     const WorkerCtx = struct { pool: *zkuzu.Pool, idx: usize };
-    fn worker(ctx: *WorkerCtx) !void {
-        // Each worker inserts one unique Person in a transaction
-        _ = try ctx.pool.withTransaction(!void, ctx.idx, struct {
-            fn cb(tx: *Transaction, i: usize) !void {
-                var ps = try tx.prepare("MERGE (:Person {name: $name, age: $age})");
-                defer ps.deinit();
-                var name_buf: [32]u8 = undefined;
-                const name = try std.fmt.bufPrint(&name_buf, "Worker-{d}", .{i});
-                try ps.bindString("name", name);
-                try ps.bindInt("age", @as(i64, @intCast(20 + @as(i64, @intCast(i)))));
-                var qr2 = try ps.execute();
-                qr2.deinit();
-            }
-        }.cb);
-    }
+    const Worker = struct {
+        const TxResult = (zkuzu.Error || error{PoolExhausted})!void;
+
+        fn txCb(tx: *Transaction, i: usize) TxResult {
+            var ps = try tx.prepare("MERGE (:Person {name: $name, age: $age})");
+            defer ps.deinit();
+            var name_buf: [32]u8 = undefined;
+            const name = std.fmt.bufPrint(&name_buf, "Worker-{d}", .{i}) catch unreachable;
+            try ps.bindString("name", name);
+            try ps.bindInt("age", @as(i64, @intCast(20 + @as(i64, @intCast(i)))));
+            var qr2 = try ps.execute();
+            qr2.deinit();
+            return;
+        }
+
+        fn run(ctx: *WorkerCtx) !void {
+            // Each worker inserts one unique Person in a transaction
+            try ctx.pool.withTransaction(TxResult, ctx.idx, txCb);
+        }
+    };
 
     var threads: [8]std.Thread = undefined;
     var ctxs: [8]WorkerCtx = undefined;
     var i: usize = 0;
     while (i < threads.len) : (i += 1) {
         ctxs[i] = .{ .pool = &pool, .idx = i };
-        threads[i] = try std.Thread.spawn(.{}, worker, .{&ctxs[i]});
+        threads[i] = try std.Thread.spawn(.{}, Worker.run, .{&ctxs[i]});
     }
     for (threads) |th| th.join();
 

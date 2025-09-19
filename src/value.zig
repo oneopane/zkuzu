@@ -12,7 +12,7 @@ pub const TypeInfo = struct {
     /// Returns: `true` if `T` is optional; otherwise `false`
     pub fn isOptional(comptime T: type) bool {
         return switch (@typeInfo(T)) {
-            .Optional => true,
+            .optional => true,
             else => false,
         };
     }
@@ -25,8 +25,8 @@ pub const TypeInfo = struct {
     /// Returns: The inner type of `?T`, or `T` unchanged.
     pub fn childOfOptional(comptime T: type) type {
         const ti = @typeInfo(T);
-        if (ti == .Optional) {
-            return ti.Optional.child;
+        if (ti == .optional) {
+            return ti.optional.child;
         }
         return T;
     }
@@ -39,7 +39,7 @@ pub const TypeInfo = struct {
     /// Returns: `true` if `T` is a slice
     pub fn isSlice(comptime T: type) bool {
         return switch (@typeInfo(T)) {
-            .Pointer => |p| p.size == .Slice,
+            .pointer => |p| p.size == .slice,
             else => false,
         };
     }
@@ -50,7 +50,7 @@ pub const TypeInfo = struct {
     pub fn sliceChild(comptime T: type) type {
         const ti = @typeInfo(T);
         return switch (ti) {
-            .Pointer => |p| if (p.size == .Slice) p.child else @compileError("sliceChild: expected slice type"),
+            .pointer => |p| if (p.size == .slice) p.child else @compileError("sliceChild: expected slice type"),
             else => @compileError("sliceChild: expected slice type"),
         };
     }
@@ -58,7 +58,7 @@ pub const TypeInfo = struct {
     /// Whether `T` is a fixed-size array type `[N]Child`.
     pub fn isArray(comptime T: type) bool {
         return switch (@typeInfo(T)) {
-            .Array => true,
+            .array => true,
             else => false,
         };
     }
@@ -69,7 +69,7 @@ pub const TypeInfo = struct {
     pub fn arrayChild(comptime T: type) type {
         const ti = @typeInfo(T);
         return switch (ti) {
-            .Array => |a| a.child,
+            .array => |a| a.child,
             else => @compileError("arrayChild: expected array type"),
         };
     }
@@ -123,7 +123,6 @@ pub const Cast = struct {
     ///
     /// Returns: `x` cast to `T` or `Error.ConversionError` on overflow
     pub fn toInt(comptime T: type, x: anytype) Error!T {
-        const TT = @TypeOf(x);
         comptime {
             if (!TypeInfo.isSignedInt(T) and !TypeInfo.isUnsignedInt(T))
                 @compileError(std.fmt.comptimePrint("Cast.toInt: T must be integer, got {s}", .{@typeName(T)}));

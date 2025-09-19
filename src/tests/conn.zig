@@ -44,9 +44,7 @@ test "state transitions and recovery" {
     try std.testing.expectEqual(zkuzu.ConnState.idle, conn.getState());
 
     // Force a failure with an invalid statement
-    _ = conn.query("THIS IS NOT VALID CYPHER") catch |err| {
-        _ = err; // expect failure
-    };
+    try std.testing.expectError(zkuzu.Error.QueryFailed, conn.query("THIS IS NOT VALID CYPHER"));
     try std.testing.expectEqual(zkuzu.ConnState.failed, conn.getState());
 
     // Automatic recovery on next operation
@@ -55,17 +53,20 @@ test "state transitions and recovery" {
     try std.testing.expectEqual(zkuzu.ConnState.idle, conn.getState());
 }
 
-fn worker(ctx: *struct { pool: *zkuzu.Pool, err_count: *std.atomic.Value(u32) }) void {
+const WorkerCtx = struct {
+    pool: *zkuzu.Pool,
+    err_count: *std.atomic.Value(u32),
+};
+
+fn worker(ctx: *WorkerCtx) void {
     // Each worker acquires, runs a simple query, releases
     var i: usize = 0;
     while (i < 50) : (i += 1) {
-        var c = ctx.pool.acquire() catch |e| {
-            _ = e;
+        var c = ctx.pool.acquire() catch {
             _ = ctx.err_count.fetchAdd(1, .monotonic);
             continue;
         };
-        var qr = c.query("RETURN 1") catch |e| {
-            _ = e;
+        var qr = c.query("RETURN 1") catch {
             _ = ctx.err_count.fetchAdd(1, .monotonic);
             ctx.pool.release(c);
             continue;
@@ -94,7 +95,7 @@ test "pool validates and handles concurrent usage" {
 
     // Now run concurrent workers; pool should validate and repair
     var err_count = std.atomic.Value(u32).init(0);
-    var ctx = .{ .pool = &pool, .err_count = &err_count };
+    var ctx = WorkerCtx{ .pool = &pool, .err_count = &err_count };
     var threads: [8]std.Thread = undefined;
     var t: usize = 0;
     while (t < threads.len) : (t += 1) {

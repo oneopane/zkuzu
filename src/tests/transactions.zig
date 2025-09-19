@@ -21,7 +21,10 @@ test "tx: nested begin fails and recovery works" {
     try std.testing.expectEqual(zkuzu.ConnState.idle, fx.conn.getState());
     var qr = try fx.conn.query("RETURN 2");
     defer qr.deinit();
-    if (try qr.next()) |row| { defer row.deinit(); try std.testing.expectEqual(@as(i64, 2), try row.get(i64, 0)); }
+    if (try qr.next()) |row| {
+        defer row.deinit();
+        try std.testing.expectEqual(@as(i64, 2), try row.get(i64, 0));
+    }
 }
 
 test "tx: rollback discards changes" {
@@ -50,24 +53,29 @@ test "tx: concurrent transactions via pool (no deadlock)" {
     defer pool.deinit();
 
     const WorkerCtx = struct { pool: *zkuzu.Pool, id: usize };
-    fn worker(ctx: *WorkerCtx) !void {
-        _ = try ctx.pool.withTransaction(!void, ctx.id, struct {
-            fn cb(tx: *Transaction, i: usize) !void {
-                var ps = try tx.prepare("MERGE (:Account {id: $id})");
-                defer ps.deinit();
-                try ps.bindInt("id", @as(i64, @intCast(i)));
-                var qr = try ps.execute();
-                qr.deinit();
-            }
-        }.cb);
-    }
+    const Worker = struct {
+        const TxResult = (zkuzu.Error || error{PoolExhausted})!void;
+
+        fn txCb(tx: *Transaction, i: usize) TxResult {
+            var ps = try tx.prepare("MERGE (:Account {id: $id})");
+            defer ps.deinit();
+            try ps.bindInt("id", @as(i64, @intCast(i)));
+            var qr = try ps.execute();
+            qr.deinit();
+            return;
+        }
+
+        fn run(ctx: *WorkerCtx) !void {
+            try ctx.pool.withTransaction(TxResult, ctx.id, txCb);
+        }
+    };
 
     var threads: [6]std.Thread = undefined;
     var ctxs: [6]WorkerCtx = undefined;
     var i: usize = 0;
     while (i < threads.len) : (i += 1) {
         ctxs[i] = .{ .pool = &pool, .id = i };
-        threads[i] = try std.Thread.spawn(.{}, worker, .{&ctxs[i]});
+        threads[i] = try std.Thread.spawn(.{}, Worker.run, .{&ctxs[i]});
     }
     for (threads) |th| th.join();
 
@@ -98,10 +106,13 @@ test "tx: single-connection pool avoids deadlock and reports exhaustion" {
     // Concurrent attempt should return PoolExhausted, not deadlock
     var err_count: usize = 0;
     var th = try std.Thread.spawn(.{}, struct {
+        const ExhaustResult = (zkuzu.Error || error{PoolExhausted})!void;
+
         fn run(p: *zkuzu.Pool, ec: *usize) void {
-            _ = p.withTransaction(!void, {}, struct {
-                fn cb(tx: *Transaction, _: void) !void {
+            _ = p.withTransaction(ExhaustResult, {}, struct {
+                fn cb(tx: *Transaction, _: void) ExhaustResult {
                     _ = tx;
+                    return;
                 }
             }.cb) catch {
                 ec.* += 1;

@@ -62,6 +62,7 @@ This document summarizes current coverage and lists targeted additions to reach 
 - [ ] Pool Lifecycle
   - Test `cleanupIdle` closes idle connections and maintains consistency of stats.
   - Health check behavior under failure/replacement.
+  - Reproduce and fix current `pool validates and handles concurrent usage` regression under Zig 0.15.1.
 
 - [ ] Value Conversions (Additional)
   - Add targeted coverage for:
@@ -78,6 +79,7 @@ This document summarizes current coverage and lists targeted additions to reach 
 - [ ] Connection State Refactor (if/when implemented)
   - Replace strong assertions on `ConnState` enum with guard-based checks (busy result, `transaction_active`).
   - Add a test that forbids overlapping queries while a `QueryResult` is active.
+  - Ensure `edge: connection failure and recovery` passes without crashing after connection validation changes.
 
 ## Recommended Test Additions (sketches)
 
@@ -98,4 +100,3 @@ This document summarizes current coverage and lists targeted additions to reach 
 1) Add tests incrementally in existing files to keep structure stable.
 2) Use util helpers (`src/tests/util.zig`) for DB fixtures and timers to avoid duplication.
 3) For scenarios requiring longer wall-clock behavior (interrupt/timeout), keep thresholds conservative to avoid flakiness.
-

@@ -21,15 +21,6 @@ pub const Conn = struct {
         failed,
     };
 
-    conn: c.kuzu_connection,
-    allocator: std.mem.Allocator,
-    last_error_message: ?[]u8 = null,
-    err: ?KuzuError = null,
-    _err_data: ?[]u8 = null,
-    db_handle: *c.kuzu_database,
-    state: State = .idle,
-    mutex: std.Thread.Mutex = .{},
-
     pub const Stats = struct {
         created_ts: i64 = 0,
         last_used_ts: i64 = 0,
@@ -47,6 +38,14 @@ pub const Conn = struct {
         pings: u64 = 0,
     };
 
+    conn: c.kuzu_connection,
+    allocator: std.mem.Allocator,
+    last_error_message: ?[]u8 = null,
+    err: ?KuzuError = null,
+    _err_data: ?[]u8 = null,
+    db_handle: *c.kuzu_database,
+    state: State = .idle,
+    mutex: std.Thread.Mutex = .{},
     stats: Stats = .{},
 
     /// Initialize a new connection from an existing database handle.
@@ -159,7 +158,10 @@ pub const Conn = struct {
     ///
     /// Returns: Pointer to `KuzuError` owned by the connection, or null
     pub fn lastError(self: *Conn) ?*const KuzuError {
-        if (self.err) |*e| return e; else return null;
+        if (self.err) |*e| {
+            return e;
+        }
+        return null;
     }
 
     /// Get the current connection state.
@@ -230,7 +232,7 @@ pub const Conn = struct {
         self.mutex.lock();
         // Automatic recovery path if failed
         if (self.state == .failed) {
-            if (self.recoverLocked()) | | {
+            if (self.recoverLocked()) |_| {
                 // success
             } else |err| {
                 self.mutex.unlock();

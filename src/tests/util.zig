@@ -17,13 +17,14 @@ pub const DbFixture = struct {
     allocator: std.mem.Allocator,
     db: zkuzu.Database,
     conn: zkuzu.Conn,
-    z_path: [*:0]u8,
+    z_path: [:0]u8,
 
     pub fn init(a: std.mem.Allocator, dir: []const u8, name: []const u8) !DbFixture {
         _ = try std.fs.cwd().makeOpenPath(dir, .{});
         const full = try std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name });
         defer a.free(full);
-        const z = try zkuzu.toCString(a, full);
+        const z_const = try zkuzu.toCString(a, full);
+        const z = @constCast(z_const);
         errdefer a.free(z);
 
         var db = try zkuzu.open(z, null);

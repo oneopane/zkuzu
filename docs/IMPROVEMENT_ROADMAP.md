@@ -198,6 +198,7 @@ Expand test coverage to match pg.zig's comprehensive testing approach.
   - Constraint violation paths.
   - Pool `cleanupIdle` lifecycle.
   - Additional value conversions: blob/uuid/decimal/internal_id coverage.
+  - Regression hunt for pool validation and structured error tests after Zig 0.15.1 migration.
 
 ## Priority 6: API Documentation
 
@@ -313,4 +314,3 @@ Timeline: Ongoing
 - Add deprecation notices for breaking changes
 - Consider creating a v2 branch for major changes
 - Regular benchmarking against C API performance
-

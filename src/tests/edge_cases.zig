@@ -34,17 +34,18 @@ test "edge: maximum parameter binding (stress)" {
 
     // Build a RETURN $p0 + $p1 + ... expression
     const N: usize = 32; // conservative but meaningful coverage
-    var qbuf = std.ArrayList(u8).init(a);
-    defer qbuf.deinit();
-    try qbuf.writer().print("RETURN ", .{});
+    var qbuf = std.ArrayList(u8){};
+    defer qbuf.deinit(a);
+    var writer = qbuf.writer(a);
+    try writer.print("RETURN ", .{});
     var expected: i64 = 0;
     var i: usize = 0;
     while (i < N) : (i += 1) {
-        if (i != 0) try qbuf.writer().print(" + ", .{});
-        try qbuf.writer().print("$p{d}", .{i});
+        if (i != 0) try writer.print(" + ", .{});
+        try writer.print("$p{d}", .{i});
         expected += @as(i64, @intCast(i));
     }
-    const q = try qbuf.toOwnedSlice();
+    const q = try qbuf.toOwnedSlice(a);
     defer a.free(q);
 
     var ps = try fx.conn.prepare(q);
@@ -75,9 +76,7 @@ test "edge: connection failure and recovery" {
     // commit while not in a transaction -> error + failed state
     const before = fx.conn.getState();
     try std.testing.expectEqual(zkuzu.ConnState.idle, before);
-    _ = fx.conn.commit() catch |e| {
-        _ = e;
-    };
+    try std.testing.expectError(zkuzu.Error.TransactionFailed, fx.conn.commit());
     try std.testing.expectEqual(zkuzu.ConnState.failed, fx.conn.getState());
 
     // Validate should attempt recovery and bring it back to idle
