@@ -187,25 +187,25 @@ Expand test coverage to match pg.zig's comprehensive testing approach.
 
 ### Implementation Checklist
 
-- [ ] **src/tests/integration.zig** (new file)
+- [x] **src/tests/integration.zig** (new file)
   - End-to-end workflow tests
   - Multi-threaded connection tests (ref: zqlite/src/pool.zig:126-132)
   - Large dataset handling tests
   - Performance benchmarks
 
-- [ ] **src/tests/edge_cases.zig** (new file)
+- [x] **src/tests/edge_cases.zig** (new file)
   - Null value handling
   - Empty result sets
   - Maximum parameter limits
   - Connection loss scenarios
 
-- [ ] **src/tests/transactions.zig** (new file)
+- [x] **src/tests/transactions.zig** (new file)
   - Nested transaction behavior
   - Rollback scenarios
   - Concurrent transaction tests (ref: zqlite/src/pool.zig:149-157)
   - Deadlock handling
 
-- [ ] **test_runner.zig**
+- [x] **test_runner.zig**
   - Add test utilities and helpers (ref: pg.zig/src/t.zig)
   - Implement test database setup/teardown (ref: zqlite/src/pool.zig:161-176)
   - Add performance measurement

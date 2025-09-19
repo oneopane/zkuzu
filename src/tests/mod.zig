@@ -10,4 +10,8 @@ comptime {
     _ = @import("query_result.zig");
     _ = @import("strings.zig");
     _ = @import("errors.zig");
+    _ = @import("util.zig");
+    _ = @import("integration.zig");
+    _ = @import("edge_cases.zig");
+    _ = @import("transactions.zig");
 }

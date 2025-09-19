@@ -15,6 +15,7 @@ pub fn main() !void {
     const skip: usize = 0;
     var fail: usize = 0;
 
+    const start_all = try std.time.Timer.start();
     for (test_list, 0..) |test_fn, i| {
         var status: []const u8 = "PASS";
 
@@ -26,20 +27,23 @@ pub fn main() !void {
             }
         }
 
-        // Print test name
+        // Print test name and time each test
         std.debug.print("[{}/{}] {s}...", .{ i + 1, test_list.len, test_fn.name });
+        var t = try std.time.Timer.start();
 
         // Run the test
         test_fn.func() catch |err| {
             status = "FAIL";
             fail += 1;
-            std.debug.print(" {s}: {}\n", .{ status, err });
+            const ms = t.read() / std.time.ns_per_ms;
+            std.debug.print(" {s} ({} ms): {}\n", .{ status, ms, err });
             continue;
         };
 
         if (std.mem.eql(u8, status, "PASS")) {
             pass += 1;
-            std.debug.print(" {s}\n", .{status});
+            const ms = t.read() / std.time.ns_per_ms;
+            std.debug.print(" {s} ({} ms)\n", .{ status, ms });
         }
     }
 
@@ -50,6 +54,7 @@ pub fn main() !void {
     std.debug.print("  Failed: {}\n", .{fail});
     std.debug.print("  Skipped: {}\n", .{skip});
     std.debug.print("  Total: {}\n", .{test_list.len});
+    std.debug.print("  Elapsed: {} ms\n", .{start_all.read() / std.time.ns_per_ms});
 
     if (fail > 0) {
         std.process.exit(1);
