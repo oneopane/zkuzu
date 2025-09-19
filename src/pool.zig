@@ -92,9 +92,11 @@ pub const Pool = struct {
     };
 
     database: *Database,
-    connections: std.ArrayListUnmanaged(PooledConn),
+    connections: std.ArrayListUnmanaged(*PooledConn),
     max_connections: usize,
     mutex: std.Thread.Mutex,
+    cond: std.Thread.Condition,
+    tx_mutex: std.Thread.Mutex,
     allocator: std.mem.Allocator,
 
     /// Initialize a connection pool.
@@ -109,6 +111,8 @@ pub const Pool = struct {
             .connections = .{},
             .max_connections = max_connections,
             .mutex = std.Thread.Mutex{},
+            .cond = std.Thread.Condition{},
+            .tx_mutex = std.Thread.Mutex{},
             .allocator = allocator,
         };
     }
@@ -118,8 +122,9 @@ pub const Pool = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        for (self.connections.items) |*pooled| {
+        for (self.connections.items) |pooled| {
             pooled.conn.deinit();
+            self.allocator.destroy(pooled);
         }
         self.connections.deinit(self.allocator);
     }
@@ -127,89 +132,188 @@ pub const Pool = struct {
     // Acquire a connection from the pool
     /// Acquire a connection from the pool (may create a new one).
     ///
-    /// Returns: `Conn` value; pass it back to `release(conn)` when done.
+    /// Returns: Pointer to a pooled connection; hand it back to `release` when done.
     ///
     /// Errors:
     /// - `error.PoolExhausted`: If all connections are busy and at capacity
     /// - `zkuzu.Error.ConnectionInit`: If creating a new connection fails
-    pub fn acquire(self: *Pool) !Conn {
-        self.mutex.lock();
+    pub fn acquire(self: *Pool) !*Conn {
+        var attempted_create = false;
 
+        while (true) {
+            self.mutex.lock();
+            const now = std.time.timestamp();
+
+            // Look for an idle connection first.
+            var pick: ?usize = null;
+            var i: usize = 0;
+            while (i < self.connections.items.len) : (i += 1) {
+                if (!self.connections.items[i].in_use) {
+                    pick = i;
+                    break;
+                }
+            }
+
+            if (pick) |idx| {
+                const pooled = self.connections.items[idx];
+                pooled.in_use = true;
+                pooled.last_used = now;
+                const conn_ptr = &pooled.conn;
+                self.mutex.unlock();
+
+                // Validate outside the lock; recover or replace on demand.
+                conn_ptr.validate() catch {
+                    conn_ptr.recover() catch {};
+                    conn_ptr.validate() catch {
+                        var replacement = try self.database.connection();
+                        errdefer replacement.deinit();
+
+                        self.mutex.lock();
+                        pooled.conn.deinit();
+                        pooled.conn = replacement;
+                        pooled.last_used = std.time.timestamp();
+                        self.mutex.unlock();
+                        return &pooled.conn;
+                    };
+                    return conn_ptr;
+                };
+                return conn_ptr;
+            }
+
+            // No idle connection. If we can grow and we haven't tried yet, do so.
+            if (!attempted_create and self.connections.items.len < self.max_connections) {
+                self.mutex.unlock();
+
+                var conn = try self.database.connection();
+                errdefer conn.deinit();
+                conn.validate() catch {};
+
+                var pooled = try self.allocator.create(PooledConn);
+                errdefer {
+                    pooled.conn.deinit();
+                    self.allocator.destroy(pooled);
+                }
+                pooled.* = .{
+                    .conn = conn,
+                    .in_use = true,
+                    .last_used = std.time.timestamp(),
+                };
+
+                self.mutex.lock();
+                if (self.connections.items.len < self.max_connections) {
+                    try self.connections.append(self.allocator, pooled);
+                    self.mutex.unlock();
+                    return &pooled.conn;
+                }
+                self.mutex.unlock();
+
+                // Pool filled up while we were creating a new connection.
+                pooled.conn.deinit();
+                self.allocator.destroy(pooled);
+                attempted_create = true;
+                continue;
+            }
+
+            // Pool saturated; wait until a connection is released.
+            self.cond.wait(&self.mutex);
+            self.mutex.unlock();
+        }
+    }
+
+    /// Try to acquire a connection without blocking. Returns PoolExhausted if none available.
+    pub fn tryAcquire(self: *Pool) !*Conn {
+        var attempted_create = false;
+
+        // Single pass that mirrors `acquire` logic, but without waiting.
+        self.mutex.lock();
         const now = std.time.timestamp();
 
-        // Look for an available connection
-        var idx: ?usize = null;
+        // Look for an idle connection first.
+        var pick: ?usize = null;
         var i: usize = 0;
         while (i < self.connections.items.len) : (i += 1) {
             if (!self.connections.items[i].in_use) {
-                idx = i;
+                pick = i;
                 break;
             }
         }
-        if (idx) |pick| {
-            var pooled_ptr = &self.connections.items[pick];
-            const conn_ptr = &pooled_ptr.conn;
-            pooled_ptr.in_use = true;
-            pooled_ptr.last_used = now;
+
+        if (pick) |idx| {
+            const pooled = self.connections.items[idx];
+            pooled.in_use = true;
+            pooled.last_used = now;
+            const conn_ptr = &pooled.conn;
             self.mutex.unlock();
 
-            // Validate outside the lock
+            // Validate outside the lock; recover or replace on demand.
             conn_ptr.validate() catch {
-                // Attempt recovery then re-validate
                 conn_ptr.recover() catch {};
                 conn_ptr.validate() catch {
-                    // Replacement path
-                    const new_conn = try self.database.connection();
-                    // Update pooled slot with the new connection
+                    var replacement = try self.database.connection();
+                    errdefer replacement.deinit();
+
                     self.mutex.lock();
-                    self.connections.items[pick].conn.deinit();
-                    self.connections.items[pick].conn = new_conn;
-                    self.connections.items[pick].in_use = true;
-                    self.connections.items[pick].last_used = std.time.timestamp();
+                    pooled.conn.deinit();
+                    pooled.conn = replacement;
+                    pooled.last_used = std.time.timestamp();
                     self.mutex.unlock();
-                    return new_conn;
+                    return &pooled.conn;
                 };
-                return conn_ptr.*;
+                return conn_ptr;
             };
-            return conn_ptr.*;
+            return conn_ptr;
         }
 
-        // Create a new connection if we haven't reached the limit
-        if (self.connections.items.len < self.max_connections) {
+        // No idle connection. If we can grow and we haven't tried yet, do so.
+        if (!attempted_create and self.connections.items.len < self.max_connections) {
+            self.mutex.unlock();
+
             var conn = try self.database.connection();
             errdefer conn.deinit();
-            // Validate new connection right away (best-effort)
             conn.validate() catch {};
-            if (self.connections.append(self.allocator, .{
+
+            var pooled = try self.allocator.create(PooledConn);
+            errdefer {
+                pooled.conn.deinit();
+                self.allocator.destroy(pooled);
+            }
+            pooled.* = .{
                 .conn = conn,
                 .in_use = true,
-                .last_used = now,
-            })) |_| {
+                .last_used = std.time.timestamp(),
+            };
+
+            self.mutex.lock();
+            if (self.connections.items.len < self.max_connections) {
+                try self.connections.append(self.allocator, pooled);
                 self.mutex.unlock();
-                return conn;
-            } else |append_err| {
-                self.mutex.unlock();
-                conn.deinit();
-                return append_err;
+                return &pooled.conn;
             }
+            self.mutex.unlock();
+
+            // Pool filled up while we were creating a new connection.
+            pooled.conn.deinit();
+            self.allocator.destroy(pooled);
+            attempted_create = true;
+        } else {
+            self.mutex.unlock();
         }
 
-        // All connections are in use and we've reached the limit
-        self.mutex.unlock();
+        // At capacity and none available.
         return error.PoolExhausted;
     }
 
     // Release a connection back to the pool
     /// Return a previously acquired connection back to the pool.
-    pub fn release(self: *Pool, conn: Conn) void {
+    pub fn release(self: *Pool, conn: *Conn) void {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        for (self.connections.items) |*pooled| {
-            // Compare underlying C connection handles
-            if (@intFromPtr(pooled.conn.conn._connection) == @intFromPtr(conn.conn._connection)) {
+        for (self.connections.items) |pooled| {
+            if (&pooled.conn == conn) {
                 pooled.in_use = false;
                 pooled.last_used = std.time.timestamp();
+                self.cond.signal();
                 break;
             }
         }
@@ -218,7 +322,7 @@ pub const Pool = struct {
     // Execute a query using a pooled connection
     /// Convenience: acquire, query, release.
     pub fn query(self: *Pool, query_str: []const u8) !zkuzu.QueryResult {
-        var conn = try self.acquire();
+        const conn = try self.acquire();
         defer self.release(conn);
         return try conn.query(query_str);
     }
@@ -236,11 +340,11 @@ pub const Pool = struct {
             else => @compileError("withConnection requires an error-union return type"),
         };
 
-        var conn = self.acquire() catch |err| {
+        const conn = self.acquire() catch |err| {
             return err;
         };
         defer self.release(conn);
-        return func(&conn, context);
+        return func(conn, context);
     }
 
     // Execute a function within a transaction using a pooled connection
@@ -253,20 +357,30 @@ pub const Pool = struct {
             else => @compileError("withTransaction requires an error-union return type"),
         };
 
-        var conn = self.acquire() catch |err| {
-            return err;
-        };
+        // Avoid deadlock when pool size is 1: do not block.
+        const conn = if (self.max_connections == 1)
+            self.tryAcquire() catch |err| return err
+        else
+            self.acquire() catch |err| return err;
         defer self.release(conn);
 
-        // Begin transaction
+        self.tx_mutex.lock();
+        var tx_lock_held = true;
+        defer if (tx_lock_held) self.tx_mutex.unlock();
+
+        // Begin transaction (serialized by tx_mutex)
         conn.beginTransaction() catch |err| {
+            tx_lock_held = false;
+            self.tx_mutex.unlock();
             return err;
         };
 
-        var tx = Transaction.init(&conn);
+        var tx = Transaction.init(conn);
 
         const result = func(&tx, context) catch |cb_err| {
             if (tx.isActive()) tx.rollback() catch {};
+            tx_lock_held = false;
+            self.tx_mutex.unlock();
             return cb_err;
         };
 
@@ -275,10 +389,14 @@ pub const Pool = struct {
             tx.commit() catch |commit_err| {
                 // Best-effort rollback if commit failed
                 if (tx.isActive()) tx.rollback() catch {};
+                tx_lock_held = false;
+                self.tx_mutex.unlock();
                 return commit_err;
             };
         }
 
+        tx_lock_held = false;
+        self.tx_mutex.unlock();
         return result;
     }
 
@@ -311,16 +429,14 @@ pub const Pool = struct {
         var i: usize = 0;
 
         while (i < self.connections.items.len) {
-            const pooled = &self.connections.items[i];
+            const pooled = self.connections.items[i];
             if (!pooled.in_use and (now - pooled.last_used) > max_idle_seconds) {
+                _ = self.connections.swapRemove(i);
                 pooled.conn.deinit();
-                // ordered remove
-                const last_index = self.connections.items.len - 1;
-                self.connections.items[i] = self.connections.items[last_index];
-                _ = self.connections.pop();
-            } else {
-                i += 1;
+                self.allocator.destroy(pooled);
+                continue;
             }
+            i += 1;
         }
     }
 
@@ -329,14 +445,17 @@ pub const Pool = struct {
     pub fn healthCheckAll(self: *Pool) !void {
         self.mutex.lock();
         const len = self.connections.items.len;
-        var snapshots = try self.allocator.alloc(Conn, len);
+        var snapshots = try self.allocator.alloc(*Conn, len);
         defer self.allocator.free(snapshots);
         var i: usize = 0;
-        while (i < len) : (i += 1) snapshots[i] = self.connections.items[i].conn;
+        while (i < len) : (i += 1) {
+            const pooled = self.connections.items[i];
+            snapshots[i] = &pooled.conn;
+        }
         self.mutex.unlock();
 
-        for (snapshots) |*cconn| {
-            cconn.validate() catch {};
+        for (snapshots) |conn_ptr| {
+            conn_ptr.validate() catch {};
         }
     }
 };

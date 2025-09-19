@@ -21,8 +21,8 @@ test "edge: null handling and empty result sets" {
         try std.testing.expect(false); // should have a single row
     }
 
-    // Empty result: match nothing
-    var none = try fx.conn.query("MATCH (x:NoSuch) RETURN x");
+    // Empty result: use a query that returns no rows without relying on schema
+    var none = try fx.conn.query("RETURN 1 LIMIT 0");
     defer none.deinit();
     try std.testing.expectEqual(@as(?*zkuzu.Row, null), try none.next());
 }

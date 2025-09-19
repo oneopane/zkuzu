@@ -270,17 +270,41 @@ pub const Conn = struct {
     }
 
     fn recoverLocked(self: *Conn) !void {
-        // Destroy existing handle (if any), create a new one.
-        // Connection handle must be reinitialized using stored db_handle
-        c.kuzu_connection_destroy(&self.conn);
-        var conn_handle: c.kuzu_connection = undefined;
-        const st = c.kuzu_connection_init(self.db_handle, &conn_handle);
-        // If reinit fails, keep failed state
+        // Special-case: nested beginTransaction misuse. Avoid destroy/reinit to
+        // work around potential crashes in some libkuzu versions.
+        if (self.err) |*e| {
+            const is_tx = (e.op == .transaction);
+            const msg = e.message;
+            if (is_tx and (std.mem.indexOf(u8, msg, "beginTransaction called while not idle") != null or
+                std.mem.indexOf(u8, msg, "commit called while not in transaction") != null or
+                std.mem.indexOf(u8, msg, "rollback called while not in transaction") != null))
+            {
+                // Best-effort rollback; ignore failures
+                const c_q = strings.toCString(self.allocator, "ROLLBACK") catch null;
+                if (c_q) |q| {
+                    var tmp: c.kuzu_query_result = std.mem.zeroes(c.kuzu_query_result);
+                    _ = c.kuzu_connection_query(&self.conn, q, &tmp);
+                    if (tmp._query_result != null) c.kuzu_query_result_destroy(&tmp);
+                    self.allocator.free(q);
+                }
+                self.clearError();
+                self.state = .idle;
+                self.stats.last_reset_ts = std.time.timestamp();
+                return;
+            }
+        }
+
+        // General path: initialize a fresh handle first; swap only on success
+        var new_handle: c.kuzu_connection = undefined;
+        const st = c.kuzu_connection_init(self.db_handle, &new_handle);
+        // If reinit fails, keep existing handle and failed state
         if (st != c.KuzuSuccess) {
             self.state = .failed;
             return errors.Error.InvalidConnection;
         }
-        self.conn = conn_handle;
+        // Replace old handle
+        c.kuzu_connection_destroy(&self.conn);
+        self.conn = new_handle;
         self.clearError();
         self.state = .idle;
         self.stats.reconnects += 1;
@@ -460,7 +484,10 @@ pub const Conn = struct {
         const prev = try self.beginOp();
         // Only allowed when not already in a transaction
         if (prev != .idle) {
-            self.endOp(prev, false, null);
+            std.debug.print("beginTransaction: state not idle (prev={s})\n", .{@tagName(prev)});
+            // Mark the connection as failed to signal misuse clearly
+            self.setFailedLocked();
+            self.mutex.unlock();
             self.setError(.transaction, "beginTransaction called while not idle");
             return Error.TransactionFailed;
         }
@@ -474,14 +501,30 @@ pub const Conn = struct {
         var result: c.kuzu_query_result = std.mem.zeroes(c.kuzu_query_result);
         const state = c.kuzu_connection_query(&self.conn, c_query, &result);
         if (state != c.KuzuSuccess or result._query_result == null) {
-            if (result._query_result != null) c.kuzu_query_result_destroy(&result);
-            self.setError(.transaction, "BEGIN TRANSACTION failed");
+            std.debug.print(
+                "beginTransaction: kuzu_connection_query failed state={} result_ptr={any}\n",
+                .{ state, result._query_result },
+            );
+            if (result._query_result != null) {
+                var qtmp = QueryResult.init(result, self.allocator);
+                const msg_opt = qtmp.getErrorMessage() catch null;
+                qtmp.deinit();
+                if (msg_opt) |owned| {
+                    self.setError(.transaction, owned);
+                    self.allocator.free(owned);
+                } else {
+                    self.setError(.transaction, "BEGIN TRANSACTION failed");
+                }
+            } else {
+                self.setError(.transaction, "BEGIN TRANSACTION failed");
+            }
             return Error.TransactionFailed;
         }
 
         var q = QueryResult.init(result, self.allocator);
         defer q.deinit();
         if (!q.isSuccess()) {
+            std.debug.print("beginTransaction: QueryResult not success\n", .{});
             const msg_opt = q.getErrorMessage() catch null;
             if (msg_opt) |owned| {
                 self.setError(.transaction, owned);

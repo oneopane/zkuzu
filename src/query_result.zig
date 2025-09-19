@@ -377,12 +377,32 @@ pub const Row = struct {
             return try val.toBool();
         }
         if (is_signed) {
-            const x = try val.toInt();
-            return try @import("value.zig").Cast.toInt(T, x);
+            // Prefer signed fetch; fall back to unsigned with bounds check.
+            const Cast = @import("value.zig").Cast;
+            const xi = val.toInt() catch |e| {
+                switch (e) {
+                    Error.TypeMismatch => {
+                        const xu = try val.toUInt();
+                        return try Cast.toInt(T, xu);
+                    },
+                    else => return e,
+                }
+            };
+            return try Cast.toInt(T, xi);
         }
         if (is_unsigned) {
-            const x = try val.toUInt();
-            return try @import("value.zig").Cast.toInt(T, x);
+            // Prefer unsigned fetch; fall back to signed with bounds check.
+            const Cast = @import("value.zig").Cast;
+            const xu = val.toUInt() catch |e| {
+                switch (e) {
+                    Error.TypeMismatch => {
+                        const xi = try val.toInt();
+                        return try Cast.toInt(T, xi);
+                    },
+                    else => return e,
+                }
+            };
+            return try Cast.toInt(T, xu);
         }
         if (is_float) {
             const x = try val.toFloat();
