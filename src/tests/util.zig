@@ -48,4 +48,3 @@ pub fn bench(label: []const u8, f: anytype) !u64 {
     std.debug.print("bench {s}: {} ms\n", .{ label, ms });
     return ms;
 }
-

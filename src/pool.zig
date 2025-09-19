@@ -5,50 +5,72 @@ const Conn = zkuzu.Conn;
 const Error = @import("errors.zig").Error;
 
 // Transaction helper that scopes BEGIN/COMMIT/ROLLBACK around a pooled connection
+/// Lightweight transaction wrapper used with `Pool.withTransaction` or manually.
+///
+/// A `Transaction` borrows a `Conn` from the pool and ensures `commit()` or
+/// `rollback()` is called exactly once. Use `close()` to roll back if still
+/// active, swallowing errors.
 pub const Transaction = struct {
     conn: *Conn,
     active: bool = false,
 
+    /// Create an active transaction wrapper for `conn`.
+    /// Caller must call `commit()` or `rollback()` (or `close()`).
     pub fn init(conn: *Conn) Transaction {
         return .{ .conn = conn, .active = true };
     }
 
+    /// Whether the transaction is still active.
     pub fn isActive(self: *Transaction) bool {
         return self.active;
     }
 
+    /// Error if the transaction is already closed.
+    ///
+    /// Errors: `Error.TransactionAlreadyClosed`
     pub fn ensureActive(self: *Transaction) !void {
         if (!self.active) return Error.TransactionAlreadyClosed;
     }
 
+    /// Execute a query within this transaction.
     pub fn query(self: *Transaction, q: []const u8) !zkuzu.QueryResult {
         try self.ensureActive();
         return try self.conn.query(q);
     }
 
+    /// Execute a statement (without rows) within this transaction.
     pub fn exec(self: *Transaction, q: []const u8) !void {
         try self.ensureActive();
         try self.conn.exec(q);
     }
 
+    /// Prepare a statement within this transaction.
     pub fn prepare(self: *Transaction, q: []const u8) !zkuzu.PreparedStatement {
         try self.ensureActive();
         return try self.conn.prepare(q);
     }
 
+    /// Commit this transaction and mark it inactive.
     pub fn commit(self: *Transaction) !void {
         try self.ensureActive();
         defer self.active = false;
         try self.conn.commit();
     }
 
+    /// Roll back this transaction and mark it inactive.
     pub fn rollback(self: *Transaction) !void {
         try self.ensureActive();
         defer self.active = false;
         try self.conn.rollback();
     }
 
-    // Ensure rollback if still active; swallow rollback errors
+    /// Ensure rollback if still active; swallow rollback errors.
+    ///
+    /// Parameters:
+    /// - `self`: Transaction wrapper to close
+    ///
+    /// Returns: Nothing. If the transaction is still active, performs a
+    /// best-effort rollback and marks it inactive.
     pub fn close(self: *Transaction) void {
         if (self.active) {
             self.conn.rollback() catch {};
@@ -58,6 +80,10 @@ pub const Transaction = struct {
 };
 
 // Connection pool for managing multiple connections
+/// A simple connection pool for `zkuzu.Conn` with validation and recycling.
+///
+/// Acquire with `acquire()` and return with `release()`, or use
+/// `withConnection` and `withTransaction` helpers to scope usage safely.
 pub const Pool = struct {
     const PooledConn = struct {
         conn: Conn,
@@ -71,6 +97,12 @@ pub const Pool = struct {
     mutex: std.Thread.Mutex,
     allocator: std.mem.Allocator,
 
+    /// Initialize a connection pool.
+    ///
+    /// Parameters:
+    /// - `allocator`: Storage for internal arrays and temporaries
+    /// - `database`: Backing database for new connections
+    /// - `max_connections`: Maximum pool size
     pub fn init(allocator: std.mem.Allocator, database: *Database, max_connections: usize) !Pool {
         return .{
             .database = database,
@@ -81,6 +113,7 @@ pub const Pool = struct {
         };
     }
 
+    /// Destroy the pool and close all managed connections.
     pub fn deinit(self: *Pool) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -92,6 +125,13 @@ pub const Pool = struct {
     }
 
     // Acquire a connection from the pool
+    /// Acquire a connection from the pool (may create a new one).
+    ///
+    /// Returns: `Conn` value; pass it back to `release(conn)` when done.
+    ///
+    /// Errors:
+    /// - `error.PoolExhausted`: If all connections are busy and at capacity
+    /// - `zkuzu.Error.ConnectionInit`: If creating a new connection fails
     pub fn acquire(self: *Pool) !Conn {
         self.mutex.lock();
 
@@ -101,7 +141,10 @@ pub const Pool = struct {
         var idx: ?usize = null;
         var i: usize = 0;
         while (i < self.connections.items.len) : (i += 1) {
-            if (!self.connections.items[i].in_use) { idx = i; break; }
+            if (!self.connections.items[i].in_use) {
+                idx = i;
+                break;
+            }
         }
         if (idx) |pick| {
             var pooled_ptr = &self.connections.items[pick];
@@ -158,6 +201,7 @@ pub const Pool = struct {
     }
 
     // Release a connection back to the pool
+    /// Return a previously acquired connection back to the pool.
     pub fn release(self: *Pool, conn: Conn) void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -173,6 +217,7 @@ pub const Pool = struct {
     }
 
     // Execute a query using a pooled connection
+    /// Convenience: acquire, query, release.
     pub fn query(self: *Pool, query_str: []const u8) !zkuzu.QueryResult {
         var conn = try self.acquire();
         defer self.release(conn);
@@ -180,6 +225,12 @@ pub const Pool = struct {
     }
 
     // Execute a function with a pooled connection
+    /// Run `func(conn, context)` with a pooled connection, releasing afterwards.
+    ///
+    /// Parameters:
+    /// - `T`: Error-union return type of the callback
+    /// - `context`: Arbitrary context passed to the callback
+    /// - `func`: Callback that receives `*Conn` and `context`
     pub fn withConnection(self: *Pool, comptime T: type, context: anytype, func: fn (conn: *Conn, ctx: @TypeOf(context)) T) T {
         comptime switch (@typeInfo(T)) {
             .error_union => {},
@@ -194,6 +245,9 @@ pub const Pool = struct {
     }
 
     // Execute a function within a transaction using a pooled connection
+    /// Run `func(tx, context)` inside a transaction with automatic commit/rollback.
+    ///
+    /// On callback success, commits (if still active). On error, rolls back.
     pub fn withTransaction(self: *Pool, comptime T: type, context: anytype, func: fn (tx: *Transaction, ctx: @TypeOf(context)) T) T {
         comptime switch (@typeInfo(T)) {
             .error_union => {},
@@ -230,6 +284,7 @@ pub const Pool = struct {
     }
 
     // Get pool statistics
+    /// Snapshot current pool counters.
     pub fn getStats(self: *Pool) PoolStats {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -248,6 +303,7 @@ pub const Pool = struct {
     }
 
     // Clean up idle connections
+    /// Close and remove idle connections older than `max_idle_seconds`.
     pub fn cleanupIdle(self: *Pool, max_idle_seconds: i64) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -270,6 +326,7 @@ pub const Pool = struct {
     }
 
     // Health check all pooled connections
+    /// Validate all pooled connections (best-effort), replacing failed ones on next acquire.
     pub fn healthCheckAll(self: *Pool) !void {
         self.mutex.lock();
         const len = self.connections.items.len;

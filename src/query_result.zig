@@ -16,6 +16,13 @@ pub const QueryResult = struct {
     name_to_index: ?std.StringHashMapUnmanaged(u64) = null,
     _arena: *ArenaAllocator,
 
+    /// Initialize a `QueryResult` wrapper around a Kuzu `kuzu_query_result`.
+    ///
+    /// Parameters:
+    /// - `result`: Raw C handle returned by Kuzu
+    /// - `allocator`: Allocator used for row/value lifetimes and maps
+    ///
+    /// Returns: A `QueryResult` value; call `deinit()` when finished.
     pub fn init(result: c.kuzu_query_result, allocator: std.mem.Allocator) QueryResult {
         const arena = allocator.create(ArenaAllocator) catch @panic("arena alloc failed");
         arena.* = ArenaAllocator.init(allocator);
@@ -26,6 +33,9 @@ pub const QueryResult = struct {
         };
     }
 
+    /// Destroy the query result and free owned resources.
+    ///
+    /// Releases any active row, internal maps, and the arena used for strings.
     pub fn deinit(self: *QueryResult) void {
         // Clean up any current row tuple first
         if (self.current_row) |row| {
@@ -45,11 +55,19 @@ pub const QueryResult = struct {
     }
 
     // Check if query was successful
+    /// Whether the underlying Kuzu execution succeeded.
+    ///
+    /// Returns: `true` on success; `false` if Kuzu reported an error
     pub fn isSuccess(self: *QueryResult) bool {
         return c.kuzu_query_result_is_success(&self.result);
     }
 
-    // Get error message if query failed
+    /// Get an owned copy of the error message if the query failed.
+    ///
+    /// Returns: `?[]u8` owned by `self.allocator` or `null` if none.
+    ///
+    /// Errors:
+    /// - `error.OutOfMemory`: If duplicating the message fails
     pub fn getErrorMessage(self: *QueryResult) !?[]u8 {
         const msg_ptr = c.kuzu_query_result_get_error_message(&self.result);
         if (msg_ptr == null) return null;
@@ -61,12 +79,22 @@ pub const QueryResult = struct {
         return copy;
     }
 
-    // Get number of columns
+    /// Get number of columns in the result schema.
+    ///
+    /// Returns: Column count as `u64`
     pub fn getColumnCount(self: *QueryResult) u64 {
         return c.kuzu_query_result_get_num_columns(&self.result);
     }
 
-    // Get column name by index
+    /// Get column name by index.
+    ///
+    /// Parameters:
+    /// - `index`: Zero-based column index
+    ///
+    /// Returns: Borrowed string stored in this result's arena
+    ///
+    /// Errors:
+    /// - `Error.Unknown`: If the C call fails
     pub fn getColumnName(self: *QueryResult, index: u64) ![]const u8 {
         var name_ptr: [*c]u8 = undefined;
         const state = c.kuzu_query_result_get_column_name(&self.result, index, &name_ptr);
@@ -92,13 +120,27 @@ pub const QueryResult = struct {
         self.name_to_index = map;
     }
 
+    /// Look up column index by name (O(1) after first call).
+    ///
+    /// Parameters:
+    /// - `name`: Column name
+    ///
+    /// Returns: `?u64` index if found; otherwise `null`
+    ///
+    /// Errors:
+    /// - `error.OutOfMemory`: If the name map must be allocated and fails
     pub fn getColumnIndex(self: *QueryResult, name: []const u8) !?u64 {
         try self.ensureNameIndexCache();
         const map = &self.name_to_index.?;
         return map.get(name);
     }
 
-    // Get column data type by index
+    /// Get logical data type id for the column at `index`.
+    ///
+    /// Returns: `ValueType` corresponding to Kuzu logical type id
+    ///
+    /// Errors:
+    /// - `Error.Unknown`: If the C call fails
     pub fn getColumnDataType(self: *QueryResult, index: u64) !ValueType {
         var dtype: c.kuzu_logical_type = undefined;
         const state = c.kuzu_query_result_get_column_data_type(&self.result, index, &dtype);
@@ -108,12 +150,25 @@ pub const QueryResult = struct {
         return @as(ValueType, @enumFromInt(type_id));
     }
 
-    // Check if there are more rows
+    /// Whether there are more rows to iterate.
+    ///
+    /// Returns: `true` if `next()` may yield a row
     pub fn hasNext(self: *QueryResult) bool {
         return c.kuzu_query_result_has_next(&self.result);
     }
 
-    // Get next row
+    /// Fetch the next row as a `*Row` handle.
+    ///
+    /// Returns: `?*Row`. Caller must `deinit()` the row before calling `next()` again.
+    ///
+    /// Errors:
+    /// - `Error.Unknown`: If Kuzu returns a failing state
+    /// - `error.OutOfMemory`: If allocation fails
+    ///
+    /// Example:
+    /// ```zig
+    /// while (try qr.next()) |row| { defer row.deinit(); }
+    /// ```
     pub fn next(self: *QueryResult) !?*Row {
         if (!self.hasNext()) {
             return null;
@@ -137,7 +192,7 @@ pub const QueryResult = struct {
         return row_ptr;
     }
 
-    // Reset to beginning
+    /// Reset the row iterator to the beginning.
     pub fn reset(self: *QueryResult) void {
         if (self.current_row) |row| {
             row.deinit();
@@ -146,7 +201,12 @@ pub const QueryResult = struct {
         c.kuzu_query_result_reset_iterator(&self.result);
     }
 
-    // Get query summary
+    /// Get compile and execution time summary for the query.
+    ///
+    /// Returns: `QuerySummary` with times in milliseconds
+    ///
+    /// Errors:
+    /// - `Error.Unknown`: If the C call fails
     pub fn getSummary(self: *QueryResult) !QuerySummary {
         var summary: c.kuzu_query_summary = undefined;
         const state = c.kuzu_query_result_get_query_summary(&self.result, &summary);
@@ -171,6 +231,14 @@ pub const Row = struct {
     owned_blobs: std.ArrayListUnmanaged([*c]u8) = .{},
     is_active: bool = true,
 
+    /// Initialize a `Row` wrapper around a `kuzu_flat_tuple`.
+    ///
+    /// Parameters:
+    /// - `tuple`: Raw C tuple handle for the current row
+    /// - `result`: Parent `QueryResult` (for arena and column lookups)
+    /// - `allocator`: Allocator used for owned values/blobs
+    ///
+    /// Returns: Initialized `Row`; call `deinit()` when done with the row.
     pub fn init(tuple: c.kuzu_flat_tuple, result: *QueryResult, allocator: std.mem.Allocator) Row {
         return .{
             .tuple = tuple,
@@ -181,6 +249,9 @@ pub const Row = struct {
         };
     }
 
+    /// Destroy the row, releasing the underlying C tuple and owned blobs.
+    ///
+    /// Safe to call once. After `deinit`, the handle is inactive.
     pub fn deinit(self: *Row) void {
         if (!self.is_active) return;
         self.is_active = false;
@@ -202,7 +273,12 @@ pub const Row = struct {
         allocator.destroy(self);
     }
 
-    // Get value at column index
+    /// Get a generic `Value` at the given column `index`.
+    ///
+    /// Returns: Owned `Value` that must be `deinit()`ed by the caller.
+    ///
+    /// Errors:
+    /// - `Error.Unknown`: If the C call fails
     pub fn getValue(self: *Row, index: u64) !Value {
         var val: c.kuzu_value = undefined;
         const state = c.kuzu_flat_tuple_get_value(&self.tuple, index, &val);
@@ -213,7 +289,24 @@ pub const Row = struct {
         return v;
     }
 
-    // Type-safe generic getter with compile-time validation and nullable handling.
+    /// Type-safe generic getter with compile-time validation and null handling.
+    ///
+    /// Parameters:
+    /// - `T`: Destination type (e.g. `i64`, `?[]const u8`, `[]Value`, `Value`)
+    /// - `index`: Zero-based column index
+    ///
+    /// Returns: A value of type `T` converted from the Kuzu value.
+    ///
+    /// Errors:
+    /// - `Error.TypeMismatch`: If the logical type cannot convert to `T`
+    /// - `Error.InvalidArgument`: If the value is NULL but `T` is not optional
+    /// - `error.OutOfMemory`: On allocation for slices/strings
+    ///
+    /// Example:
+    /// ```zig
+    /// const name: []const u8 = try row.get([]const u8, 0);
+    /// const maybe_age: ?i64 = try row.get(?i64, 1);
+    /// ```
     pub fn get(self: *Row, comptime T: type, index: usize) !T {
         // Disallow fixed-size arrays; support slices instead.
         if (valtypes.TypeInfo.isArray(T)) {
@@ -243,7 +336,13 @@ pub const Row = struct {
         return result;
     }
 
-    // Generic get by column name
+    /// Generic get by column name using cached name→index mapping.
+    ///
+    /// Parameters:
+    /// - `T`: Destination type
+    /// - `name`: Column name to resolve
+    ///
+    /// Returns: Value of type `T` or error
     pub fn getByName(self: *Row, comptime T: type, name: []const u8) !T {
         const idx = (try self.result.getColumnIndex(name)) orelse return Error.InvalidColumn;
         return try self.get(T, idx);
@@ -353,7 +452,10 @@ pub const Row = struct {
                 var found = false;
                 while (j < kuzu_n) : (j += 1) {
                     const name = try val.getStructFieldName(j);
-                    if (std.mem.eql(u8, name, f.name)) { found = true; break; }
+                    if (std.mem.eql(u8, name, f.name)) {
+                        found = true;
+                        break;
+                    }
                 }
                 if (!found) return Error.TypeMismatch;
                 var child_val = try val.getStructFieldValue(j);
@@ -369,30 +471,41 @@ pub const Row = struct {
     }
 
     // Convenience methods for common types
+    /// Get a boolean at `index`.
+    ///
+    /// Errors: `Error.TypeMismatch` if the value is not Bool
     pub fn getBool(self: *Row, index: u64) !bool {
         var val = try self.getValue(index);
         defer val.deinit();
         return val.toBool();
     }
 
+    /// Get a signed 64-bit integer at `index`.
+    ///
+    /// Errors: `Error.TypeMismatch` if the value is not an int
     pub fn getInt(self: *Row, index: u64) !i64 {
         var val = try self.getValue(index);
         defer val.deinit();
         return val.toInt();
     }
 
+    /// Get a double-precision float at `index`.
     pub fn getFloat(self: *Row, index: u64) !f64 {
         var val = try self.getValue(index);
         defer val.deinit();
         return val.toFloat();
     }
 
+    /// Get an unsigned 64-bit integer at `index`.
     pub fn getUInt(self: *Row, index: u64) !u64 {
         var val = try self.getValue(index);
         defer val.deinit();
         return val.toUInt();
     }
 
+    /// Get a borrowed UTF-8 slice at `index` valid until `row.deinit()`.
+    ///
+    /// Errors: `Error.Unknown` on C call failures
     pub fn getString(self: *Row, index: u64) ![]const u8 {
         // Fetch as C string and tie lifetime to this row
         var val: c.kuzu_value = undefined;
@@ -408,22 +521,26 @@ pub const Row = struct {
         return out;
     }
 
+    /// Copy the string at `index` using `allocator`. Returns null if value is NULL.
     pub fn copyString(self: *Row, allocator: std.mem.Allocator, index: u64) !?[]u8 {
         if (try self.isNull(index)) return null;
         const s = try self.getString(index);
         return try allocator.dupe(u8, s);
     }
 
+    /// Convenience: `getInt` by column `name`.
     pub fn getIntByName(self: *Row, name: []const u8) !i64 {
         const idx = (try self.result.getColumnIndex(name)) orelse return Error.InvalidColumn;
         return try self.getInt(idx);
     }
 
+    /// Convenience: `getString` by column `name`.
     pub fn getStringByName(self: *Row, name: []const u8) ![]const u8 {
         const idx = (try self.result.getColumnIndex(name)) orelse return Error.InvalidColumn;
         return try self.getString(idx);
     }
 
+    /// Whether the value at `index` is NULL.
     pub fn isNull(self: *Row, index: u64) !bool {
         var val: c.kuzu_value = undefined;
         const state = c.kuzu_flat_tuple_get_value(&self.tuple, index, &val);
@@ -433,60 +550,70 @@ pub const Row = struct {
     }
 
     // Extended typed getters
+    /// Get a borrowed blob at `index` valid until `row.deinit()`.
     pub fn getBlob(self: *Row, index: u64) ![]const u8 {
         var val = try self.getValue(index);
         defer val.deinit();
         return try val.toBlob();
     }
 
+    /// Copy the blob at `index` using `allocator`. Returns null if value is NULL.
     pub fn copyBlob(self: *Row, allocator: std.mem.Allocator, index: u64) !?[]u8 {
         if (try self.isNull(index)) return null;
         const b = try self.getBlob(index);
         return try allocator.dupe(u8, b);
     }
 
+    /// Get a `kuzu_date_t` at `index`.
     pub fn getDate(self: *Row, index: u64) !c.kuzu_date_t {
         var val = try self.getValue(index);
         defer val.deinit();
         return try val.toDate();
     }
 
+    /// Get a `kuzu_timestamp_t` at `index`.
     pub fn getTimestamp(self: *Row, index: u64) !c.kuzu_timestamp_t {
         var val = try self.getValue(index);
         defer val.deinit();
         return try val.toTimestamp();
     }
 
+    /// Get a `kuzu_interval_t` at `index`.
     pub fn getInterval(self: *Row, index: u64) !c.kuzu_interval_t {
         var val = try self.getValue(index);
         defer val.deinit();
         return try val.toInterval();
     }
 
+    /// Get a UUID string at `index`.
     pub fn getUuid(self: *Row, index: u64) ![]const u8 {
         var val = try self.getValue(index);
         defer val.deinit();
         return try val.toUuid();
     }
 
+    /// Copy the UUID string at `index`; returns null if NULL.
     pub fn copyUuid(self: *Row, allocator: std.mem.Allocator, index: u64) !?[]u8 {
         if (try self.isNull(index)) return null;
         const u = try self.getUuid(index);
         return try allocator.dupe(u8, u);
     }
 
+    /// Get a decimal value rendered as string at `index`.
     pub fn getDecimalString(self: *Row, index: u64) ![]const u8 {
         var val = try self.getValue(index);
         defer val.deinit();
         return try val.toDecimalString();
     }
 
+    /// Copy the decimal string at `index`; returns null if NULL.
     pub fn copyDecimalString(self: *Row, allocator: std.mem.Allocator, index: u64) !?[]u8 {
         if (try self.isNull(index)) return null;
         const s = try self.getDecimalString(index);
         return try allocator.dupe(u8, s);
     }
 
+    /// Get an internal id struct at `index`.
     pub fn getInternalId(self: *Row, index: u64) !c.kuzu_internal_id_t {
         var val = try self.getValue(index);
         defer val.deinit();
@@ -498,10 +625,14 @@ pub const Row = struct {
 pub const Rows = struct {
     result: *QueryResult,
 
+    /// Fetch the next row via the underlying `QueryResult`.
+    ///
+    /// Returns: `?*Row` or error; caller must `deinit()` the row.
     pub fn next(self: *Rows) !?*Row {
         return self.result.next();
     }
 
+    /// Reset the iterator to the beginning.
     pub fn reset(self: *Rows) void {
         self.result.reset();
     }
@@ -553,6 +684,13 @@ pub const Value = struct {
     owned: bool,
     owner_row: ?*Row = null,
 
+    /// Wrap a raw `kuzu_value` in a `Value` (not owned by default).
+    ///
+    /// Parameters:
+    /// - `val`: Raw C value handle
+    /// - `allocator`: Allocator used for copied strings/blobs
+    ///
+    /// Returns: A `Value` with `owned=false`. Callers may set ownership.
     pub fn fromCValue(val: c.kuzu_value, allocator: std.mem.Allocator) Value {
         return .{
             .value = val,
@@ -561,6 +699,9 @@ pub const Value = struct {
         };
     }
 
+    /// Destroy the value if owned.
+    ///
+    /// Safe to call even if not owned; no-op in that case.
     pub fn deinit(self: *Value) void {
         if (self.owned) c.kuzu_value_destroy(&self.value);
     }
@@ -593,6 +734,9 @@ pub const Value = struct {
         return try allocator.dupe(u8, slice);
     }
 
+    /// Get the logical type of this value.
+    ///
+    /// Returns: `ValueType` enum
     pub fn getType(self: *Value) ValueType {
         var dtype: c.kuzu_logical_type = undefined;
         c.kuzu_value_get_data_type(&self.value, &dtype);
@@ -601,10 +745,14 @@ pub const Value = struct {
         return @as(ValueType, @enumFromInt(type_id));
     }
 
+    /// Whether this value is NULL.
     pub fn isNull(self: *Value) bool {
         return c.kuzu_value_is_null(&self.value);
     }
 
+    /// Convert to bool.
+    ///
+    /// Errors: `Error.TypeMismatch` if underlying type is not Bool
     pub fn toBool(self: *Value) !bool {
         if (self.getType() != .Bool) return Error.TypeMismatch;
         var result: bool = undefined;
@@ -613,6 +761,9 @@ pub const Value = struct {
         return result;
     }
 
+    /// Convert to signed 64-bit integer from Int8/16/32/64.
+    ///
+    /// Errors: `Error.TypeMismatch` if type is not a signed integer
     pub fn toInt(self: *Value) !i64 {
         const value_type = self.getType();
         switch (value_type) {
@@ -644,6 +795,9 @@ pub const Value = struct {
         }
     }
 
+    /// Convert to unsigned 64-bit integer from UInt8/16/32/64.
+    ///
+    /// Errors: `Error.TypeMismatch` if type is not an unsigned integer
     pub fn toUInt(self: *Value) !u64 {
         const value_type = self.getType();
         switch (value_type) {
@@ -671,6 +825,9 @@ pub const Value = struct {
         }
     }
 
+    /// Convert to double-precision float.
+    ///
+    /// Errors: `Error.TypeMismatch` if not Float/Double
     pub fn toFloat(self: *Value) !f64 {
         const value_type = self.getType();
         switch (value_type) {
@@ -690,6 +847,7 @@ pub const Value = struct {
         }
     }
 
+    /// Convert to `kuzu_date_t`.
     pub fn toDate(self: *Value) !c.kuzu_date_t {
         if (self.getType() != .Date) return Error.TypeMismatch;
         var d: c.kuzu_date_t = undefined;
@@ -697,6 +855,7 @@ pub const Value = struct {
         return d;
     }
 
+    /// Convert to `kuzu_timestamp_t`.
     pub fn toTimestamp(self: *Value) !c.kuzu_timestamp_t {
         const t = self.getType();
         var ts: c.kuzu_timestamp_t = undefined;
@@ -722,6 +881,7 @@ pub const Value = struct {
         return ts;
     }
 
+    /// Convert to `kuzu_interval_t`.
     pub fn toInterval(self: *Value) !c.kuzu_interval_t {
         if (self.getType() != .Interval) return Error.TypeMismatch;
         var i: c.kuzu_interval_t = undefined;
@@ -729,6 +889,7 @@ pub const Value = struct {
         return i;
     }
 
+    /// Convert to UUID as a borrowed string.
     pub fn toUuid(self: *Value) ![]const u8 {
         if (self.getType() != .Uuid) return Error.TypeMismatch;
         var c_str: [*c]u8 = undefined;
@@ -736,6 +897,7 @@ pub const Value = struct {
         return self.borrowCString(c_str);
     }
 
+    /// Convert to decimal, rendered as a borrowed string.
     pub fn toDecimalString(self: *Value) ![]const u8 {
         if (self.getType() != .Decimal) return Error.TypeMismatch;
         var c_str: [*c]u8 = undefined;
@@ -743,6 +905,7 @@ pub const Value = struct {
         return self.borrowCString(c_str);
     }
 
+    /// Convert to `kuzu_internal_id_t`.
     pub fn toInternalId(self: *Value) !c.kuzu_internal_id_t {
         if (self.getType() != .InternalId) return Error.TypeMismatch;
         var id: c.kuzu_internal_id_t = undefined;
@@ -750,6 +913,7 @@ pub const Value = struct {
         return id;
     }
 
+    /// Convert to string as a borrowed slice.
     pub fn toString(self: *Value) ![]const u8 {
         if (self.getType() != .String) return Error.TypeMismatch;
         var c_str: [*c]u8 = undefined;
@@ -758,6 +922,7 @@ pub const Value = struct {
         return self.borrowCString(c_str);
     }
 
+    /// Convert to blob as a borrowed slice.
     pub fn toBlob(self: *Value) ![]const u8 {
         if (self.getType() != .Blob) return Error.TypeMismatch;
         var blob_ptr: [*c]u8 = undefined;
@@ -772,6 +937,9 @@ pub const Value = struct {
         return std.mem.span(blob_ptr);
     }
 
+    /// Length of LIST/ARRAY value.
+    ///
+    /// Errors: `Error.TypeMismatch` if not list/array
     pub fn getListLength(self: *Value) !u64 {
         const t = self.getType();
         if (t != .List and t != .Array) return Error.TypeMismatch;
@@ -780,6 +948,7 @@ pub const Value = struct {
         return size;
     }
 
+    /// Get the element `index` from LIST/ARRAY as an owned `Value`.
     pub fn getListElement(self: *Value, index: u64) !Value {
         const t = self.getType();
         if (t != .List and t != .Array) return Error.TypeMismatch;
@@ -788,6 +957,7 @@ pub const Value = struct {
         return self.makeOwnedChild(child_raw);
     }
 
+    /// Number of fields on STRUCT/UNION/NODE/REL value.
     pub fn getStructFieldCount(self: *Value) !u64 {
         const t = self.getType();
         switch (t) {
@@ -799,6 +969,7 @@ pub const Value = struct {
         return count;
     }
 
+    /// Get borrowed field name at `index` for STRUCT/UNION/NODE/REL.
     pub fn getStructFieldName(self: *Value, index: u64) ![]const u8 {
         const t = self.getType();
         switch (t) {
@@ -810,6 +981,7 @@ pub const Value = struct {
         return self.borrowCString(c_str);
     }
 
+    /// Copy field name at `index` using `allocator`.
     pub fn copyStructFieldName(self: *Value, allocator: std.mem.Allocator, index: u64) ![]u8 {
         const t = self.getType();
         switch (t) {
@@ -821,6 +993,7 @@ pub const Value = struct {
         return self.copyCString(allocator, c_str);
     }
 
+    /// Get field value at `index` as an owned `Value`.
     pub fn getStructFieldValue(self: *Value, index: u64) !Value {
         const t = self.getType();
         switch (t) {
@@ -832,6 +1005,7 @@ pub const Value = struct {
         return self.makeOwnedChild(child_raw);
     }
 
+    /// Number of entries in MAP value.
     pub fn getMapSize(self: *Value) !u64 {
         if (self.getType() != .Map) return Error.TypeMismatch;
         var size: u64 = 0;
@@ -839,6 +1013,7 @@ pub const Value = struct {
         return size;
     }
 
+    /// Get map key at `index` as an owned `Value`.
     pub fn getMapKey(self: *Value, index: u64) !Value {
         if (self.getType() != .Map) return Error.TypeMismatch;
         var child_raw: c.kuzu_value = undefined;
@@ -846,6 +1021,7 @@ pub const Value = struct {
         return self.makeOwnedChild(child_raw);
     }
 
+    /// Get map value at `index` as an owned `Value`.
     pub fn getMapValue(self: *Value, index: u64) !Value {
         if (self.getType() != .Map) return Error.TypeMismatch;
         var child_raw: c.kuzu_value = undefined;
@@ -853,6 +1029,7 @@ pub const Value = struct {
         return self.makeOwnedChild(child_raw);
     }
 
+    /// Get the node list of a `RecursiveRel` as a `Value`.
     pub fn getRecursiveRelNodeList(self: *Value) !Value {
         if (self.getType() != .RecursiveRel) return Error.TypeMismatch;
         var child_raw: c.kuzu_value = undefined;
@@ -860,6 +1037,7 @@ pub const Value = struct {
         return self.makeOwnedChild(child_raw);
     }
 
+    /// Get the rel list of a `RecursiveRel` as a `Value`.
     pub fn getRecursiveRelRelList(self: *Value) !Value {
         if (self.getType() != .RecursiveRel) return Error.TypeMismatch;
         var child_raw: c.kuzu_value = undefined;
@@ -867,16 +1045,19 @@ pub const Value = struct {
         return self.makeOwnedChild(child_raw);
     }
 
+    /// View this value as a `Node` helper.
     pub fn asNode(self: *Value) !Node {
         if (self.getType() != .Node) return Error.TypeMismatch;
         return Node{ .value = self };
     }
 
+    /// View this value as a `Rel` helper.
     pub fn asRel(self: *Value) !Rel {
         if (self.getType() != .Rel) return Error.TypeMismatch;
         return Rel{ .value = self };
     }
 
+    /// View this value as a `RecursiveRel` helper.
     pub fn asRecursiveRel(self: *Value) !RecursiveRel {
         if (self.getType() != .RecursiveRel) return Error.TypeMismatch;
         return RecursiveRel{ .value = self };
@@ -885,36 +1066,42 @@ pub const Value = struct {
     pub const Node = struct {
         value: *Value,
 
+        /// Get the node id as an owned `Value`.
         pub fn idValue(self: Node) !Value {
             var child_raw: c.kuzu_value = undefined;
             try checkState(c.kuzu_node_val_get_id_val(&self.value.value, &child_raw));
             return self.value.makeOwnedChild(child_raw);
         }
 
+        /// Get the node label as an owned `Value`.
         pub fn labelValue(self: Node) !Value {
             var child_raw: c.kuzu_value = undefined;
             try checkState(c.kuzu_node_val_get_label_val(&self.value.value, &child_raw));
             return self.value.makeOwnedChild(child_raw);
         }
 
+        /// Number of properties on this node.
         pub fn propertyCount(self: Node) !u64 {
             var size: u64 = 0;
             try checkState(c.kuzu_node_val_get_property_size(&self.value.value, &size));
             return size;
         }
 
+        /// Borrowed property name at `index`.
         pub fn propertyName(self: Node, index: u64) ![]const u8 {
             var c_str: [*c]u8 = undefined;
             try checkState(c.kuzu_node_val_get_property_name_at(&self.value.value, index, &c_str));
             return self.value.borrowCString(c_str);
         }
 
+        /// Copy property name at `index` using `allocator`.
         pub fn copyPropertyName(self: Node, allocator: std.mem.Allocator, index: u64) ![]u8 {
             var c_str: [*c]u8 = undefined;
             try checkState(c.kuzu_node_val_get_property_name_at(&self.value.value, index, &c_str));
             return self.value.copyCString(allocator, c_str);
         }
 
+        /// Property value at `index` as an owned `Value`.
         pub fn propertyValue(self: Node, index: u64) !Value {
             var child_raw: c.kuzu_value = undefined;
             try checkState(c.kuzu_node_val_get_property_value_at(&self.value.value, index, &child_raw));
@@ -925,48 +1112,56 @@ pub const Value = struct {
     pub const Rel = struct {
         value: *Value,
 
+        /// Get the relationship id as an owned `Value`.
         pub fn idValue(self: Rel) !Value {
             var child_raw: c.kuzu_value = undefined;
             try checkState(c.kuzu_rel_val_get_id_val(&self.value.value, &child_raw));
             return self.value.makeOwnedChild(child_raw);
         }
 
+        /// Get the src node id as an owned `Value`.
         pub fn srcIdValue(self: Rel) !Value {
             var child_raw: c.kuzu_value = undefined;
             try checkState(c.kuzu_rel_val_get_src_id_val(&self.value.value, &child_raw));
             return self.value.makeOwnedChild(child_raw);
         }
 
+        /// Get the dst node id as an owned `Value`.
         pub fn dstIdValue(self: Rel) !Value {
             var child_raw: c.kuzu_value = undefined;
             try checkState(c.kuzu_rel_val_get_dst_id_val(&self.value.value, &child_raw));
             return self.value.makeOwnedChild(child_raw);
         }
 
+        /// Get the label as an owned `Value`.
         pub fn labelValue(self: Rel) !Value {
             var child_raw: c.kuzu_value = undefined;
             try checkState(c.kuzu_rel_val_get_label_val(&self.value.value, &child_raw));
             return self.value.makeOwnedChild(child_raw);
         }
 
+        /// Number of properties on this relationship.
         pub fn propertyCount(self: Rel) !u64 {
             var size: u64 = 0;
             try checkState(c.kuzu_rel_val_get_property_size(&self.value.value, &size));
             return size;
         }
 
+        /// Borrowed property name at `index`.
         pub fn propertyName(self: Rel, index: u64) ![]const u8 {
             var c_str: [*c]u8 = undefined;
             try checkState(c.kuzu_rel_val_get_property_name_at(&self.value.value, index, &c_str));
             return self.value.borrowCString(c_str);
         }
 
+        /// Copy property name at `index` using `allocator`.
         pub fn copyPropertyName(self: Rel, allocator: std.mem.Allocator, index: u64) ![]u8 {
             var c_str: [*c]u8 = undefined;
             try checkState(c.kuzu_rel_val_get_property_name_at(&self.value.value, index, &c_str));
             return self.value.copyCString(allocator, c_str);
         }
 
+        /// Property value at `index` as an owned `Value`.
         pub fn propertyValue(self: Rel, index: u64) !Value {
             var child_raw: c.kuzu_value = undefined;
             try checkState(c.kuzu_rel_val_get_property_value_at(&self.value.value, index, &child_raw));
@@ -977,10 +1172,12 @@ pub const Value = struct {
     pub const RecursiveRel = struct {
         value: *Value,
 
+        /// Get the list of nodes traversed by this recursive relation.
         pub fn nodeList(self: RecursiveRel) !Value {
             return self.value.getRecursiveRelNodeList();
         }
 
+        /// Get the list of relationships traversed by this recursive relation.
         pub fn relList(self: RecursiveRel) !Value {
             return self.value.getRecursiveRelRelList();
         }

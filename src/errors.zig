@@ -35,6 +35,17 @@ pub const KuzuError = struct {
     code: ?[]const u8 = null,
     raw: ?[]u8 = null,
 
+    /// Create a structured `KuzuError` with owned message text.
+    ///
+    /// Parameters:
+    /// - `allocator`: Allocator used to duplicate the message
+    /// - `op`: High-level operation that failed (e.g. `.query`, `.prepare`)
+    /// - `message`: Error message slice to copy and categorize
+    ///
+    /// Returns: An initialized `KuzuError` with categorized `category`.
+    ///
+    /// Errors:
+    /// - `error.OutOfMemory`: If the message cannot be duplicated
     pub fn init(allocator: std.mem.Allocator, op: Op, message: []const u8) !KuzuError {
         const msg_copy = try allocator.dupe(u8, message);
         var err = KuzuError{
@@ -51,6 +62,10 @@ pub const KuzuError = struct {
         return err;
     }
 
+    /// Free owned memory associated with this error.
+    ///
+    /// Parameters:
+    /// - `self`: Error to destroy. Becomes undefined after deinit.
     pub fn deinit(self: *KuzuError) void {
         const a = self.allocator;
         a.free(self.message);
@@ -77,6 +92,10 @@ pub const KuzuError = struct {
     }
 
     // Heuristic categorization from error message text.
+    /// Heuristically categorize the error based on its message text.
+    ///
+    /// Parameters:
+    /// - `self`: Error to categorize. Updates `self.category` in place.
     pub fn categorize(self: *KuzuError) void {
         const msg = self.message;
         // Common kuzu messages: "timeout", "interrupted", "Binder exception", "Parser error" etc.
@@ -145,10 +164,38 @@ pub const StateErrorHandler = struct {
     result_error: Error = Error.Unknown,
 };
 
+/// Translate a Kuzu `kuzu_state` to a Zig error.
+///
+/// Success states return normally; error states map to `Error.Unknown`.
+/// Use `checkStateWith` to capture messages and provide context.
+///
+/// Parameters:
+/// - `state`: Kuzu C API status code
+///
+/// Returns: Nothing on success
+///
+/// Errors:
+/// - `Error.Unknown`: For any non-success Kuzu state
 pub fn checkState(state: c.kuzu_state) Error!void {
     return checkStateWith(state, null);
 }
 
+/// Translate a Kuzu `kuzu_state` with optional message capture and sink.
+///
+/// Parameters:
+/// - `state`: Kuzu C API status code
+/// - `handler`: Optional `StateErrorHandler` to fetch and/or forward messages,
+///   set a specific `result_error`, and provide a fallback message.
+///
+/// Returns: Nothing on success
+///
+/// Errors:
+/// - `handler.result_error` or `Error.Unknown`: When `state` indicates failure
+///
+/// Example:
+/// ```zig
+/// try zkuzu.checkStateWith(state, .{ .allocator = alloc, .result_error = zkuzu.Error.InvalidArgument });
+/// ```
 pub fn checkStateWith(state: c.kuzu_state, handler: ?StateErrorHandler) Error!void {
     if (state == c.KuzuSuccess) return;
 

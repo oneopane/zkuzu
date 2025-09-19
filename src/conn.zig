@@ -49,6 +49,19 @@ pub const Conn = struct {
 
     stats: Stats = .{},
 
+    /// Initialize a new connection from an existing database handle.
+    ///
+    /// Prefer creating connections via `Database.connection()`. This initializer
+    /// is exposed for advanced integrators.
+    ///
+    /// Parameters:
+    /// - `db_handle`: Pointer to an initialized `c.kuzu_database`
+    /// - `allocator`: Allocator used for connection-owned allocations
+    ///
+    /// Returns: A connected `Conn` value. Call `deinit()` when done.
+    ///
+    /// Errors:
+    /// - `Error.ConnectionInit`: If Kuzu fails to create a connection
     pub fn init(db_handle: *c.kuzu_database, allocator: std.mem.Allocator) !Conn {
         var conn_handle: c.kuzu_connection = undefined;
         const state = c.kuzu_connection_init(db_handle, &conn_handle);
@@ -67,6 +80,10 @@ pub const Conn = struct {
         };
     }
 
+    /// Close the connection and release resources.
+    ///
+    /// Parameters:
+    /// - `self`: Connection to close
     pub fn deinit(self: *Conn) void {
         self.clearError();
         c.kuzu_connection_destroy(&self.conn);
@@ -79,6 +96,11 @@ pub const Conn = struct {
         }
     }
 
+    /// Set the last error message (owned by the connection).
+    ///
+    /// Parameters:
+    /// - `self`: Connection
+    /// - `msg_opt`: Owned message buffer or null; ownership transfers to `Conn`
     pub fn setLastErrorMessage(self: *Conn, msg_opt: ?[]u8) void {
         self.releaseLastErrorMessage();
         if (msg_opt) |msg| {
@@ -86,6 +108,11 @@ pub const Conn = struct {
         }
     }
 
+    /// Set the last error message by copying `msg` into connection-owned memory.
+    ///
+    /// Parameters:
+    /// - `self`: Connection
+    /// - `msg`: Message slice to copy (best-effort; ignored if OOM)
     pub fn setLastErrorMessageCopy(self: *Conn, msg: []const u8) void {
         const copy = self.allocator.dupe(u8, msg) catch {
             self.setLastErrorMessage(null);
@@ -109,6 +136,15 @@ pub const Conn = struct {
         };
     }
 
+    /// Retrieve the last error message, if any.
+    ///
+    /// The returned slice is owned by the connection and remains valid until
+    /// the next successful operation or explicit `clearError()`.
+    ///
+    /// Parameters:
+    /// - `self`: Connection
+    ///
+    /// Returns: Optional borrowed message slice, or null if none
     pub fn lastErrorMessage(self: *Conn) ?[]const u8 {
         if (self.last_error_message) |msg| {
             return msg;
@@ -116,18 +152,31 @@ pub const Conn = struct {
         return null;
     }
 
+    /// Retrieve the structured last error, if any.
+    ///
+    /// Parameters:
+    /// - `self`: Connection
+    ///
+    /// Returns: Pointer to `KuzuError` owned by the connection, or null
     pub fn lastError(self: *Conn) ?*const KuzuError {
         if (self.err) |*e| return e; else return null;
     }
 
+    /// Get the current connection state.
+    ///
+    /// Returns: One of `.idle`, `.in_transaction`, `.in_query`, `.failed`
     pub fn getState(self: *Conn) State {
         return self.state;
     }
 
+    /// Get accumulated connection statistics.
+    ///
+    /// Returns: A snapshot of `Conn.Stats` counters and timestamps
     pub fn getStats(self: *Conn) Stats {
         return self.stats;
     }
 
+    /// Clear any stored error and release owned buffers.
     pub fn clearError(self: *Conn) void {
         if (self.err) |*e| {
             e.deinit();
@@ -140,6 +189,12 @@ pub const Conn = struct {
         self.releaseLastErrorMessage();
     }
 
+    /// Install a structured error with fallback to legacy message-only storage.
+    ///
+    /// Parameters:
+    /// - `self`: Connection
+    /// - `op`: Operation category
+    /// - `msg`: Error message to record
     pub fn setError(self: *Conn, op: KuzuError.Op, msg: []const u8) void {
         // Reset previous error state
         self.clearError();
@@ -164,6 +219,13 @@ pub const Conn = struct {
         self.stats.last_error_ts = std.time.timestamp();
     }
 
+    /// Internal: Begin a connection operation with state and mutex handling.
+    ///
+    /// Returns: Previous state on success (used to restore in `endOp`).
+    ///
+    /// Errors:
+    /// - `Error.InvalidConnection`: If connection is not usable
+    /// - `Error.InvalidConnection`: If already in a conflicting state
     pub fn beginOp(self: *Conn) errors.Error!State {
         self.mutex.lock();
         // Automatic recovery path if failed
@@ -190,6 +252,12 @@ pub const Conn = struct {
         return prev;
     }
 
+    /// Internal: End a connection operation and restore/advance state.
+    ///
+    /// Parameters:
+    /// - `restore_state`: State to restore on failure or if `new_state_on_success` is null
+    /// - `success`: Whether the operation succeeded
+    /// - `new_state_on_success`: Optional state to set on success
     pub fn endOp(self: *Conn, restore_state: State, success: bool, new_state_on_success: ?State) void {
         if (success) {
             self.state = new_state_on_success orelse restore_state;
@@ -217,12 +285,34 @@ pub const Conn = struct {
         self.stats.last_reset_ts = std.time.timestamp();
     }
 
+    /// Attempt to recover a failed connection by reinitializing the handle.
+    ///
+    /// Errors:
+    /// - `Error.InvalidConnection`: If the underlying reinit fails
     pub fn recover(self: *Conn) !void {
         self.mutex.lock();
         defer self.mutex.unlock();
         try self.recoverLocked();
     }
 
+    /// Execute a Cypher query and return a `QueryResult` for row iteration.
+    ///
+    /// Parameters:
+    /// - `self`: Connection
+    /// - `query_str`: Cypher text to execute
+    ///
+    /// Returns: Initialized `QueryResult`; call `deinit()` when done.
+    ///
+    /// Errors:
+    /// - `Error.QueryFailed`: On execution error (inspect `lastErrorMessage()`)
+    /// - `error.OutOfMemory`: On allocation failure
+    ///
+    /// Example:
+    /// ```zig
+    /// var qr = try conn.query("MATCH (n) RETURN n.name AS name");
+    /// defer qr.deinit();
+    /// while (try qr.next()) |row| { defer row.deinit(); }
+    /// ```
     pub fn query(self: *Conn, query_str: []const u8) !QueryResult {
         const c_query = try toCString(self.allocator, query_str);
         defer self.allocator.free(c_query);
@@ -268,11 +358,38 @@ pub const Conn = struct {
         return q;
     }
 
+    /// Execute a Cypher statement discarding rows (DDL/DML convenience).
+    ///
+    /// Parameters:
+    /// - `query_str`: Cypher text
+    ///
+    /// Returns: Nothing on success
+    ///
+    /// Errors:
+    /// - `Error.QueryFailed`: On execution error
     pub fn exec(self: *Conn, query_str: []const u8) !void {
         var q = try self.query(query_str);
         defer q.deinit();
     }
 
+    /// Prepare a Cypher statement for repeated execution with bound parameters.
+    ///
+    /// Parameters:
+    /// - `query_str`: Cypher with named parameters like `$name`
+    ///
+    /// Returns: `PreparedStatement` bound to this connection
+    ///
+    /// Errors:
+    /// - `Error.PrepareFailed`: If preparation or binder fails
+    ///
+    /// Example:
+    /// ```zig
+    /// var ps = try conn.prepare("MATCH (p:Person) WHERE p.age > $min RETURN p");
+    /// defer ps.deinit();
+    /// try ps.bindInt("min", 40);
+    /// var rs = try ps.execute();
+    /// defer rs.deinit();
+    /// ```
     pub fn prepare(self: *Conn, query_str: []const u8) !PreparedStatement {
         const Ps = prepared_statement.PreparedStatementType(@This());
 
@@ -324,6 +441,18 @@ pub const Conn = struct {
         };
     }
 
+    /// Begin a transaction on this connection.
+    ///
+    /// Errors:
+    /// - `Error.TransactionFailed`: If already in a transaction or begin fails
+    ///
+    /// Example:
+    /// ```zig
+    /// try conn.beginTransaction();
+    /// defer conn.rollback() catch {};
+    /// try conn.exec("...");
+    /// try conn.commit();
+    /// ```
     pub fn beginTransaction(self: *Conn) !void {
         self.clearError();
         const prev = try self.beginOp();
@@ -364,6 +493,10 @@ pub const Conn = struct {
         self.stats.tx_begun += 1;
     }
 
+    /// Commit the current transaction.
+    ///
+    /// Errors:
+    /// - `Error.TransactionFailed`: If not in a transaction or commit fails
     pub fn commit(self: *Conn) !void {
         self.clearError();
         const prev = try self.beginOp();
@@ -401,6 +534,10 @@ pub const Conn = struct {
         self.stats.tx_committed += 1;
     }
 
+    /// Roll back the current transaction.
+    ///
+    /// Errors:
+    /// - `Error.TransactionFailed`: If not in a transaction or rollback fails
     pub fn rollback(self: *Conn) !void {
         self.clearError();
         const prev = try self.beginOp();
@@ -438,6 +575,15 @@ pub const Conn = struct {
         self.stats.tx_rolled_back += 1;
     }
 
+    /// Set maximum worker threads for this connection's execution.
+    ///
+    /// Parameters:
+    /// - `num_threads`: 0 lets Kuzu choose; otherwise explicit value
+    ///
+    /// Returns: Nothing on success
+    ///
+    /// Errors:
+    /// - `Error.InvalidArgument`: If Kuzu rejects the value
     pub fn setMaxThreads(self: *Conn, num_threads: u64) !void {
         self.clearError();
         const prev = try self.beginOp();
@@ -448,6 +594,12 @@ pub const Conn = struct {
         ok = true;
     }
 
+    /// Get current maximum worker threads value for execution.
+    ///
+    /// Returns: Number of threads configured
+    ///
+    /// Errors:
+    /// - `Error.InvalidArgument`: If the query fails
     pub fn getMaxThreads(self: *Conn) !u64 {
         self.clearError();
         const prev = try self.beginOp();
@@ -460,10 +612,18 @@ pub const Conn = struct {
         return num_threads;
     }
 
+    /// Interrupt a running query on this connection (best-effort).
     pub fn interrupt(self: *Conn) void {
         c.kuzu_connection_interrupt(&self.conn);
     }
 
+    /// Set query timeout in milliseconds for subsequent statements.
+    ///
+    /// Parameters:
+    /// - `timeout_ms`: Milliseconds before a query is cancelled by Kuzu
+    ///
+    /// Errors:
+    /// - `Error.InvalidArgument`: If Kuzu rejects the timeout
     pub fn setTimeout(self: *Conn, timeout_ms: u64) !void {
         self.clearError();
         const prev = try self.beginOp();
@@ -475,12 +635,24 @@ pub const Conn = struct {
     }
 
     // Health check / validation
+    /// Lightweight health check to verify connection liveness.
+    ///
+    /// Returns: Nothing on success
+    ///
+    /// Errors:
+    /// - `Error.InvalidArgument`: If underlying check fails
     pub fn healthCheck(self: *Conn) !void {
         // Use a cheap getter to verify connection liveness
         _ = try self.getMaxThreads();
         self.stats.pings += 1;
     }
 
+    /// Validate the connection and recover if previously failed.
+    ///
+    /// Returns: Nothing if valid or recovered successfully
+    ///
+    /// Errors:
+    /// - `Error.InvalidConnection`: If recovery fails or not usable
     pub fn validate(self: *Conn) !void {
         self.mutex.lock();
         if (self.state == .failed) {

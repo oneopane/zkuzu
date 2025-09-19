@@ -118,6 +118,8 @@ pub fn main() !void {
 - `Conn.commit()` - Commit transaction
 - `Conn.rollback()` - Rollback transaction
 - `Conn.lastErrorMessage()` - Fetch the latest Kuzu error string (owned by the connection; cleared on success)
+ - `Conn.setTimeout(ms)` / `Conn.setMaxThreads(n)` - Performance knobs
+ - `Conn.interrupt()` - Best-effort cancel of a running query
 
 ### Prepared Statements
 - `PreparedStatement.bindBool(name, value)`
@@ -201,6 +203,87 @@ Planned ergonomics:
 
 Thread-safety:
 - Prefer one connection per thread. The pool pattern is safe across threads when each checked-out connection is used by a single thread at a time.
+
+## API Reference
+
+This high-level reference mirrors inline doc comments. See the source for full details and examples.
+
+- Database
+  - `zkuzu.open(path, config) !Database` – open/create database
+  - `Database.connection() !Conn` – create connection
+  - `Database.deinit()` – close DB
+- Connection
+  - `Conn.query(sql) !QueryResult` – execute and get rows
+  - `Conn.exec(sql) !void` – execute, discard rows
+  - `Conn.prepare(sql) !PreparedStatement` – prepare for reuse
+  - `Conn.beginTransaction()/commit()/rollback()` – manual transactions
+  - `Conn.setTimeout(ms) !void`, `Conn.setMaxThreads(n) !void`, `Conn.getMaxThreads() !u64`
+  - `Conn.interrupt() void`, `Conn.validate() !void`, `Conn.healthCheck() !void`
+  - `Conn.lastErrorMessage() ?[]const u8`, `Conn.lastError() ?*const KuzuError`
+- PreparedStatement
+  - `bind{Bool,Int,Int32,Int16,Int8,UInt64,UInt32,UInt16,UInt8,Float,String,Date,Timestamp,TimestampNs,TimestampMs,TimestampSec,TimestampTz,Interval,Null}(...)
+  - `execute() !QueryResult`, `deinit()`
+- QueryResult
+  - `next() !?*Row`, `reset()`, `isSuccess() bool`, `getErrorMessage() !?[]u8`
+  - `getColumnCount() u64`, `getColumnName(idx) ![]const u8`, `getColumnIndex(name) !?u64`, `getColumnDataType(idx) !ValueType`
+  - `getSummary() !QuerySummary`
+- Row
+  - `get(T, idx|name) !T` – generic typed getter with null handling
+  - Convenience: `getBool/getInt/getUInt/getFloat/getString/getBlob/getDate/getTimestamp/getInterval/getUuid/getDecimalString/getInternalId`
+  - Copy helpers: `copyString/copyBlob/copyUuid/copyDecimalString`
+  - `isNull(idx) !bool`
+- Value
+  - Type conversion: `toBool/toInt/toUInt/toFloat/toString/toBlob/toDate/toTimestamp/toInterval/toUuid/toDecimalString/toInternalId`
+  - Collections: `getListLength()/getListElement(i)`; struct: `getStructFieldCount()/getStructFieldName(i)/getStructFieldValue(i)`; map: `getMapSize()/getMapKey(i)/getMapValue(i)`
+  - Graph wrappers: `asNode()/asRel()/asRecursiveRel()` with property helpers
+- Pool
+  - `Pool.init(allocator, &db, max) !Pool`, `deinit()`
+  - `acquire() !Conn`, `release(Conn)`
+  - `withConnection(T, ctx, func) T`, `withTransaction(T, ctx, func) T`
+  - `query(sql) !QueryResult`, `getStats() PoolStats`, `cleanupIdle(seconds) !void`, `healthCheckAll() !void`
+
+## Troubleshooting
+
+- Dynamic library not found at runtime
+  - macOS: set `DYLD_LIBRARY_PATH` to Kuzu `lib/` directory
+  - Linux: set `LD_LIBRARY_PATH`
+  - Windows: add directory containing the Kuzu DLL to `PATH`
+- error.QueryFailed but no message
+  - Check `QueryResult.getErrorMessage()` when available or `Conn.lastErrorMessage()` after failure
+  - Ensure you didn’t `deinit()` the result before reading the message
+- error.TypeMismatch from getters
+  - Use `Row.get(T, idx|name)` with correct `T` or the dedicated typed getter
+  - For nullable columns, make `T` optional (e.g., `?i64`)
+- Transaction state errors
+  - `beginTransaction()` only valid when idle; `commit/rollback()` only when in a transaction
+  - Prefer `Pool.withTransaction` or the safety pattern with `need_rollback`
+- Interrupted or timeout
+  - Use `Conn.setTimeout(ms)` before running a query; call `Conn.interrupt()` from another thread to cancel
+
+## Performance Tips
+
+- Reuse prepared statements for repeated queries to reduce parse/bind overhead
+- Prefer borrowed slices (`getString/getBlob`) and only copy when needed
+- Batch writes inside a transaction to avoid per-statement commits
+- Tune threads: `setMaxThreads(0)` lets Kuzu pick; otherwise set explicitly
+- Use the pool for concurrent workloads; size according to CPU/IO
+- Avoid name lookups inside tight loops by caching indices (`getColumnIndex`) once
+- Use `validate()`/`healthCheck()` for long-lived connections to preempt failures
+
+## Migration Guide
+
+- From zqlite (SQLite):
+  - `conn.exec` vs `conn.query` parallels zqlite; SQL → Cypher
+  - Prepared statements: `bind*` and `execute()` are analogous; named params use `$name`
+  - Result scanning: `Row.get(T, idx|name)` replaces column-numbered `getX`
+  - Transactions: manual begin/commit/rollback or use `Pool.withTransaction`
+- From Neo4j drivers:
+  - Cypher syntax is familiar; Kuzu is embedded, so you manage lifecycles (DB/Conn)
+  - Node/Rel values are accessed via `Value.asNode()/asRel()` helpers
+  - No network layer; pooling is for concurrent local handles
+- From other embedded stores:
+  - Memory ownership follows Zig patterns; free `QueryResult` and row handles promptly
+  - Borrowed vs owned data is explicit; copy when values outlive their owners
 
 ## Project Structure
 
@@ -352,11 +435,18 @@ Planned:
 
 - `examples/basic.zig`: schema, DDL/DML via `exec`, row scanning, summaries.
 - `examples/prepared.zig`: prepared statements, typed binds/getters, temporals.
-- Planned: types tour (lists/maps/structs/decimal/internal_id/uuid), Arrow export, and pool usage with parallel queries.
+- `examples/transactions.zig`: manual transaction pattern with safe rollback.
+- `examples/pool.zig`: pool usage, `withConnection` and `withTransaction`.
+- `examples/performance.zig`: prepared reuse, tuning, borrow vs copy.
+- `examples/error_handling.zig`: capturing errors from `Conn` and binds.
 
 Build targets:
 - `zig build example-basic`
 - `zig build example-prepared`
+- `zig build example-transactions`
+- `zig build example-pool`
+- `zig build example-performance`
+- `zig build example-errors`
 
 ## Testing and CI
 

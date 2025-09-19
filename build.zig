@@ -297,4 +297,264 @@ pub fn build(b: *std.Build) !void {
     }
     const example_prepared_step = b.step("example-prepared", "Build and run prepared example");
     example_prepared_step.dependOn(&run_prepared.step);
+
+    // Examples: transactions
+    const ex_tx = b.addExecutable(.{
+        .name = "zkuzu-transactions",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/transactions.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    if (source_build_step) |sb| ex_tx.step.dependOn(&sb.step);
+    ex_tx.root_module.addImport("zkuzu", zkuzu);
+    if (resolved_include) |inc| ex_tx.addIncludePath(inc) else ex_tx.addIncludePath(lib_path);
+    if (std.mem.eql(u8, kuzu_provider, "local") and !local_use_shared) {
+        ex_tx.addObjectFile(b.path("lib/libkuzu.a"));
+        ex_tx.addObjectFile(b.path("lib/libbrotlidec.a"));
+        ex_tx.addObjectFile(b.path("lib/libbrotlienc.a"));
+        ex_tx.addObjectFile(b.path("lib/libbrotlicommon.a"));
+        ex_tx.addObjectFile(b.path("lib/libfastpfor.a"));
+        ex_tx.addObjectFile(b.path("lib/libantlr4_runtime.a"));
+        ex_tx.addObjectFile(b.path("lib/libantlr4_cypher.a"));
+        ex_tx.addObjectFile(b.path("lib/libre2.a"));
+        ex_tx.addObjectFile(b.path("lib/libutf8proc.a"));
+        ex_tx.addObjectFile(b.path("lib/libzstd.a"));
+        ex_tx.addObjectFile(b.path("lib/libsnappy.a"));
+        ex_tx.addObjectFile(b.path("lib/liblz4.a"));
+        ex_tx.addObjectFile(b.path("lib/libminiz.a"));
+        ex_tx.addObjectFile(b.path("lib/libmbedtls.a"));
+        ex_tx.addObjectFile(b.path("lib/libthrift.a"));
+        ex_tx.addObjectFile(b.path("lib/libparquet.a"));
+        ex_tx.addObjectFile(b.path("lib/libroaring_bitmap.a"));
+        ex_tx.addObjectFile(b.path("lib/libsimsimd.a"));
+        ex_tx.addObjectFile(b.path("lib/libyyjson.a"));
+    } else {
+        if (resolved_libdir) |ld| ex_tx.addLibraryPath(ld);
+        if (resolved_libname) |ln| ex_tx.linkSystemLibrary(ln);
+    }
+    ex_tx.linkLibC();
+    ex_tx.linkLibCpp();
+    switch (os_tag) {
+        .linux => {
+            ex_tx.linkSystemLibrary("pthread");
+            ex_tx.linkSystemLibrary("dl");
+            ex_tx.linkSystemLibrary("m");
+        },
+        .macos => {
+            ex_tx.linkFramework("Foundation");
+            ex_tx.linkSystemLibrary("pthread");
+            ex_tx.linkSystemLibrary("m");
+        },
+        .windows => {
+            ex_tx.linkSystemLibrary("ws2_32");
+            ex_tx.linkSystemLibrary("bcrypt");
+        },
+        else => {},
+    }
+    const run_tx = b.addRunArtifact(ex_tx);
+    run_tx.step.dependOn(b.getInstallStep());
+    if (!(std.mem.eql(u8, kuzu_provider, "local") and !local_use_shared)) {
+        if (resolved_libdir) |ld| {
+            if (os_tag == .macos) run_tx.setEnvironmentVariable("DYLD_LIBRARY_PATH", ld.getPath(b)) else if (os_tag == .linux) run_tx.setEnvironmentVariable("LD_LIBRARY_PATH", ld.getPath(b)) else if (os_tag == .windows) run_tx.setEnvironmentVariable("PATH", ld.getPath(b));
+        }
+    }
+    const example_tx_step = b.step("example-transactions", "Build and run transactions example");
+    example_tx_step.dependOn(&run_tx.step);
+
+    // Examples: pool
+    const ex_pool = b.addExecutable(.{
+        .name = "zkuzu-pool",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/pool.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    if (source_build_step) |sb| ex_pool.step.dependOn(&sb.step);
+    ex_pool.root_module.addImport("zkuzu", zkuzu);
+    if (resolved_include) |inc| ex_pool.addIncludePath(inc) else ex_pool.addIncludePath(lib_path);
+    if (std.mem.eql(u8, kuzu_provider, "local") and !local_use_shared) {
+        ex_pool.addObjectFile(b.path("lib/libkuzu.a"));
+        ex_pool.addObjectFile(b.path("lib/libbrotlidec.a"));
+        ex_pool.addObjectFile(b.path("lib/libbrotlienc.a"));
+        ex_pool.addObjectFile(b.path("lib/libbrotlicommon.a"));
+        ex_pool.addObjectFile(b.path("lib/libfastpfor.a"));
+        ex_pool.addObjectFile(b.path("lib/libantlr4_runtime.a"));
+        ex_pool.addObjectFile(b.path("lib/libantlr4_cypher.a"));
+        ex_pool.addObjectFile(b.path("lib/libre2.a"));
+        ex_pool.addObjectFile(b.path("lib/libutf8proc.a"));
+        ex_pool.addObjectFile(b.path("lib/libzstd.a"));
+        ex_pool.addObjectFile(b.path("lib/libsnappy.a"));
+        ex_pool.addObjectFile(b.path("lib/liblz4.a"));
+        ex_pool.addObjectFile(b.path("lib/libminiz.a"));
+        ex_pool.addObjectFile(b.path("lib/libmbedtls.a"));
+        ex_pool.addObjectFile(b.path("lib/libthrift.a"));
+        ex_pool.addObjectFile(b.path("lib/libparquet.a"));
+        ex_pool.addObjectFile(b.path("lib/libroaring_bitmap.a"));
+        ex_pool.addObjectFile(b.path("lib/libsimsimd.a"));
+        ex_pool.addObjectFile(b.path("lib/libyyjson.a"));
+    } else {
+        if (resolved_libdir) |ld| ex_pool.addLibraryPath(ld);
+        if (resolved_libname) |ln| ex_pool.linkSystemLibrary(ln);
+    }
+    ex_pool.linkLibC();
+    ex_pool.linkLibCpp();
+    switch (os_tag) {
+        .linux => {
+            ex_pool.linkSystemLibrary("pthread");
+            ex_pool.linkSystemLibrary("dl");
+            ex_pool.linkSystemLibrary("m");
+        },
+        .macos => {
+            ex_pool.linkFramework("Foundation");
+            ex_pool.linkSystemLibrary("pthread");
+            ex_pool.linkSystemLibrary("m");
+        },
+        .windows => {
+            ex_pool.linkSystemLibrary("ws2_32");
+            ex_pool.linkSystemLibrary("bcrypt");
+        },
+        else => {},
+    }
+    const run_pool = b.addRunArtifact(ex_pool);
+    run_pool.step.dependOn(b.getInstallStep());
+    if (!(std.mem.eql(u8, kuzu_provider, "local") and !local_use_shared)) {
+        if (resolved_libdir) |ld| {
+            if (os_tag == .macos) run_pool.setEnvironmentVariable("DYLD_LIBRARY_PATH", ld.getPath(b)) else if (os_tag == .linux) run_pool.setEnvironmentVariable("LD_LIBRARY_PATH", ld.getPath(b)) else if (os_tag == .windows) run_pool.setEnvironmentVariable("PATH", ld.getPath(b));
+        }
+    }
+    const example_pool_step = b.step("example-pool", "Build and run pool example");
+    example_pool_step.dependOn(&run_pool.step);
+
+    // Examples: performance
+    const ex_perf = b.addExecutable(.{
+        .name = "zkuzu-performance",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/performance.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    if (source_build_step) |sb| ex_perf.step.dependOn(&sb.step);
+    ex_perf.root_module.addImport("zkuzu", zkuzu);
+    if (resolved_include) |inc| ex_perf.addIncludePath(inc) else ex_perf.addIncludePath(lib_path);
+    if (std.mem.eql(u8, kuzu_provider, "local") and !local_use_shared) {
+        ex_perf.addObjectFile(b.path("lib/libkuzu.a"));
+        ex_perf.addObjectFile(b.path("lib/libbrotlidec.a"));
+        ex_perf.addObjectFile(b.path("lib/libbrotlienc.a"));
+        ex_perf.addObjectFile(b.path("lib/libbrotlicommon.a"));
+        ex_perf.addObjectFile(b.path("lib/libfastpfor.a"));
+        ex_perf.addObjectFile(b.path("lib/libantlr4_runtime.a"));
+        ex_perf.addObjectFile(b.path("lib/libantlr4_cypher.a"));
+        ex_perf.addObjectFile(b.path("lib/libre2.a"));
+        ex_perf.addObjectFile(b.path("lib/libutf8proc.a"));
+        ex_perf.addObjectFile(b.path("lib/libzstd.a"));
+        ex_perf.addObjectFile(b.path("lib/libsnappy.a"));
+        ex_perf.addObjectFile(b.path("lib/liblz4.a"));
+        ex_perf.addObjectFile(b.path("lib/libminiz.a"));
+        ex_perf.addObjectFile(b.path("lib/libmbedtls.a"));
+        ex_perf.addObjectFile(b.path("lib/libthrift.a"));
+        ex_perf.addObjectFile(b.path("lib/libparquet.a"));
+        ex_perf.addObjectFile(b.path("lib/libroaring_bitmap.a"));
+        ex_perf.addObjectFile(b.path("lib/libsimsimd.a"));
+        ex_perf.addObjectFile(b.path("lib/libyyjson.a"));
+    } else {
+        if (resolved_libdir) |ld| ex_perf.addLibraryPath(ld);
+        if (resolved_libname) |ln| ex_perf.linkSystemLibrary(ln);
+    }
+    ex_perf.linkLibC();
+    ex_perf.linkLibCpp();
+    switch (os_tag) {
+        .linux => {
+            ex_perf.linkSystemLibrary("pthread");
+            ex_perf.linkSystemLibrary("dl");
+            ex_perf.linkSystemLibrary("m");
+        },
+        .macos => {
+            ex_perf.linkFramework("Foundation");
+            ex_perf.linkSystemLibrary("pthread");
+            ex_perf.linkSystemLibrary("m");
+        },
+        .windows => {
+            ex_perf.linkSystemLibrary("ws2_32");
+            ex_perf.linkSystemLibrary("bcrypt");
+        },
+        else => {},
+    }
+    const run_perf = b.addRunArtifact(ex_perf);
+    run_perf.step.dependOn(b.getInstallStep());
+    if (!(std.mem.eql(u8, kuzu_provider, "local") and !local_use_shared)) {
+        if (resolved_libdir) |ld| {
+            if (os_tag == .macos) run_perf.setEnvironmentVariable("DYLD_LIBRARY_PATH", ld.getPath(b)) else if (os_tag == .linux) run_perf.setEnvironmentVariable("LD_LIBRARY_PATH", ld.getPath(b)) else if (os_tag == .windows) run_perf.setEnvironmentVariable("PATH", ld.getPath(b));
+        }
+    }
+    const example_perf_step = b.step("example-performance", "Build and run performance example");
+    example_perf_step.dependOn(&run_perf.step);
+
+    // Examples: error handling
+    const ex_err = b.addExecutable(.{
+        .name = "zkuzu-errors",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/error_handling.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    if (source_build_step) |sb| ex_err.step.dependOn(&sb.step);
+    ex_err.root_module.addImport("zkuzu", zkuzu);
+    if (resolved_include) |inc| ex_err.addIncludePath(inc) else ex_err.addIncludePath(lib_path);
+    if (std.mem.eql(u8, kuzu_provider, "local") and !local_use_shared) {
+        ex_err.addObjectFile(b.path("lib/libkuzu.a"));
+        ex_err.addObjectFile(b.path("lib/libbrotlidec.a"));
+        ex_err.addObjectFile(b.path("lib/libbrotlienc.a"));
+        ex_err.addObjectFile(b.path("lib/libbrotlicommon.a"));
+        ex_err.addObjectFile(b.path("lib/libfastpfor.a"));
+        ex_err.addObjectFile(b.path("lib/libantlr4_runtime.a"));
+        ex_err.addObjectFile(b.path("lib/libantlr4_cypher.a"));
+        ex_err.addObjectFile(b.path("lib/libre2.a"));
+        ex_err.addObjectFile(b.path("lib/libutf8proc.a"));
+        ex_err.addObjectFile(b.path("lib/libzstd.a"));
+        ex_err.addObjectFile(b.path("lib/libsnappy.a"));
+        ex_err.addObjectFile(b.path("lib/liblz4.a"));
+        ex_err.addObjectFile(b.path("lib/libminiz.a"));
+        ex_err.addObjectFile(b.path("lib/libmbedtls.a"));
+        ex_err.addObjectFile(b.path("lib/libthrift.a"));
+        ex_err.addObjectFile(b.path("lib/libparquet.a"));
+        ex_err.addObjectFile(b.path("lib/libroaring_bitmap.a"));
+        ex_err.addObjectFile(b.path("lib/libsimsimd.a"));
+        ex_err.addObjectFile(b.path("lib/libyyjson.a"));
+    } else {
+        if (resolved_libdir) |ld| ex_err.addLibraryPath(ld);
+        if (resolved_libname) |ln| ex_err.linkSystemLibrary(ln);
+    }
+    ex_err.linkLibC();
+    ex_err.linkLibCpp();
+    switch (os_tag) {
+        .linux => {
+            ex_err.linkSystemLibrary("pthread");
+            ex_err.linkSystemLibrary("dl");
+            ex_err.linkSystemLibrary("m");
+        },
+        .macos => {
+            ex_err.linkFramework("Foundation");
+            ex_err.linkSystemLibrary("pthread");
+            ex_err.linkSystemLibrary("m");
+        },
+        .windows => {
+            ex_err.linkSystemLibrary("ws2_32");
+            ex_err.linkSystemLibrary("bcrypt");
+        },
+        else => {},
+    }
+    const run_err = b.addRunArtifact(ex_err);
+    run_err.step.dependOn(b.getInstallStep());
+    if (!(std.mem.eql(u8, kuzu_provider, "local") and !local_use_shared)) {
+        if (resolved_libdir) |ld| {
+            if (os_tag == .macos) run_err.setEnvironmentVariable("DYLD_LIBRARY_PATH", ld.getPath(b)) else if (os_tag == .linux) run_err.setEnvironmentVariable("LD_LIBRARY_PATH", ld.getPath(b)) else if (os_tag == .windows) run_err.setEnvironmentVariable("PATH", ld.getPath(b));
+        }
+    }
+    const example_errors_step = b.step("example-errors", "Build and run error-handling example");
+    example_errors_step.dependOn(&run_err.step);
 }

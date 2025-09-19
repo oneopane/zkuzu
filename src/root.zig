@@ -27,6 +27,18 @@ pub const toCString = strings.toCString;
 
 pub const Pool = @import("pool.zig").Pool;
 
+/// Open or create a database at `path` using an optional `SystemConfig`.
+///
+/// Convenience wrapper for `Database.init`.
+///
+/// Parameters:
+/// - `path`: Zero-terminated filesystem path to the DB directory
+/// - `config`: Optional system configuration
+///
+/// Returns: Initialized `Database` to `deinit()` when done
+///
+/// Errors:
+/// - `Error.DatabaseInit`: If Kuzu initialization fails
 pub fn open(path: [*:0]const u8, config: ?SystemConfig) !Database {
     return Database.init(path, config);
 }
