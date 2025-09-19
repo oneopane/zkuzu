@@ -57,9 +57,9 @@ pub fn main() !void {
     while (try result.next()) |row_val| {
         const row = row_val;
         defer row.deinit();
-        const name = try row.getString(0);
-        const age = try row.getInt(1);
-        const email = try row.getString(2);
+        const name = try row.get([]const u8, 0);
+        const age = try row.get(i64, 1);
+        const email = try row.get([]const u8, 2);
         std.debug.print("Person: {s}, Age: {}, Email: {s}\n", .{ name, age, email });
     }
 
@@ -75,9 +75,9 @@ pub fn main() !void {
     while (try result2.next()) |row_val| {
         const row = row_val;
         defer row.deinit();
-        const title = try row.getString(0);
-        const year = try row.getInt(1);
-        const score = try row.getInt(2);
+        const title = try row.get([]const u8, 0);
+        const year = try row.get(i64, 1);
+        const score = try row.get(i64, 2);
         std.debug.print("Movie: {s} ({}), Score: {}\n", .{ title, year, score });
     }
 
@@ -94,9 +94,9 @@ pub fn main() !void {
     while (try result3.next()) |row_val| {
         const row = row_val;
         defer row.deinit();
-        const person1 = try row.getString(0);
-        const person2 = try row.getString(1);
-        const common = try row.getInt(2);
+        const person1 = try row.get([]const u8, 0);
+        const person2 = try row.get([]const u8, 1);
+        const common = try row.get(i64, 2);
         std.debug.print("{s} and {s} like {} movies in common\n", .{ person1, person2, common });
     }
 
@@ -112,8 +112,8 @@ pub fn main() !void {
     while (try result4.next()) |row_val| {
         const row = row_val;
         defer row.deinit();
-        const name = try row.getString(0);
-        const distance = try row.getInt(1);
+        const name = try row.get([]const u8, 0);
+        const distance = try row.get(i64, 1);
         std.debug.print("Alice knows {s} with distance {}\n", .{ name, distance });
     }
 
@@ -130,8 +130,8 @@ pub fn main() !void {
     if (try result5.next()) |row_val| {
         const row = row_val;
         defer row.deinit();
-        const age = try row.getInt(0);
-        const email = try row.getString(1);
+        const age = try row.get(i64, 0);
+        const email = try row.get([]const u8, 1);
         std.debug.print("Bob's age: {}, email: {s}\n", .{ age, email });
     }
 
@@ -153,7 +153,7 @@ pub fn main() !void {
     if (try result6.next()) |row_val| {
         const row = row_val;
         defer row.deinit();
-        const age = try row.getInt(0);
+        const age = try row.get(i64, 0);
         std.debug.print("David was added with age: {}\n", .{age});
     }
 
@@ -165,7 +165,7 @@ pub fn main() !void {
     if (try result7.next()) |row_val| {
         const row = row_val;
         defer row.deinit();
-        const total = try row.getInt(0);
+        const total = try row.get(i64, 0);
         std.debug.print("Total likes: {}\n", .{total});
     }
 

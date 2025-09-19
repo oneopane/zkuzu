@@ -77,3 +77,49 @@ test "arena-backed strings lifetime and leak sanity" {
         row3.deinit();
     }
 }
+
+test "type-safe getters: scalars, nullables, lists, and mismatches" {
+    const zkuzu = @import("../root.zig");
+    const a = std.testing.allocator;
+    _ = try std.fs.cwd().makeOpenPath("zig-cache/zkuzu-qr-typesafe", .{});
+    const db_path = try zkuzu.toCString(a, "zig-cache/zkuzu-qr-typesafe/db");
+    defer a.free(db_path);
+
+    var db = try zkuzu.open(db_path, null);
+    defer db.deinit();
+    var conn = try db.connection();
+    defer conn.deinit();
+
+    var qr = try conn.query("RETURN 1 AS i, 2.5 AS f, TRUE AS b, 'hello' AS s, CAST(NULL AS INT64) AS ni, [1,2,3] AS l, 127 AS small, 128 AS big");
+    defer qr.deinit();
+
+    const row_opt = try qr.next();
+    try std.testing.expect(row_opt != null);
+    const row = row_opt.?;
+
+    // Scalars
+    try std.testing.expectEqual(@as(i64, 1), try row.get(i64, 0));
+    try std.testing.expectEqual(@as(f64, 2.5), try row.get(f64, 1));
+    try std.testing.expectEqual(true, try row.get(bool, 2));
+    try std.testing.expectEqualStrings("hello", try row.get([]const u8, 3));
+
+    // Nullables
+    try std.testing.expectEqual(@as(?i64, null), try row.get(?i64, 4));
+    try std.testing.expectError(zkuzu.Error.InvalidArgument, row.get(i64, 4));
+
+    // Lists
+    const l = try row.get([]const i64, 5);
+    try std.testing.expectEqual(@as(usize, 3), l.len);
+    try std.testing.expectEqual(@as(i64, 1), l[0]);
+    try std.testing.expectEqual(@as(i64, 2), l[1]);
+    try std.testing.expectEqual(@as(i64, 3), l[2]);
+
+    // Conversions with safety checks
+    try std.testing.expectEqual(@as(i8, 127), try row.get(i8, 6));
+    try std.testing.expectError(zkuzu.Error.ConversionError, row.get(i8, 7));
+
+    // Mismatch detection
+    try std.testing.expectError(zkuzu.Error.TypeMismatch, row.get(i64, 3)); // 's' is string
+
+    row.deinit();
+}

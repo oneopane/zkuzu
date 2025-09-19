@@ -31,8 +31,8 @@ pub fn main() !void {
     while (try result.next()) |row_val| {
         const row = row_val;
         defer row.deinit();
-        const id = try row.getInt(0);
-        const name = try row.getString(1);
+        const id = try row.get(i64, 0);
+        const name = try row.get([]const u8, 1);
         std.debug.print("  User {}: {s}\n", .{ id, name });
     }
 
@@ -43,8 +43,8 @@ pub fn main() !void {
     while (try result2.next()) |row_val| {
         const row = row_val;
         defer row.deinit();
-        const follower = try row.getString(0);
-        const followed = try row.getString(1);
+        const follower = try row.get([]const u8, 0);
+        const followed = try row.get([]const u8, 1);
         std.debug.print("  {s} follows {s}\n", .{ follower, followed });
     }
 

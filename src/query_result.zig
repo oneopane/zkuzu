@@ -3,6 +3,7 @@ const bindings = @import("bindings.zig");
 const errors = @import("errors.zig");
 
 const c = bindings.c;
+const valtypes = @import("value.zig");
 const Error = errors.Error;
 const checkState = errors.checkState;
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -210,6 +211,161 @@ pub const Row = struct {
         v.owned = true; // values fetched from FlatTuple must be destroyed
         v.owner_row = self;
         return v;
+    }
+
+    // Type-safe generic getter with compile-time validation and nullable handling.
+    pub fn get(self: *Row, comptime T: type, index: usize) !T {
+        // Disallow fixed-size arrays; support slices instead.
+        if (valtypes.TypeInfo.isArray(T)) {
+            @compileError(std.fmt.comptimePrint("Row.get: fixed-size arrays not supported; use slice of '{s}' instead", .{@typeName(valtypes.TypeInfo.arrayChild(T))}));
+        }
+
+        // Fetch once from the tuple; `Value` is owned and tied to this row.
+        var v = try self.getValue(@intCast(index));
+        const is_opt = valtypes.TypeInfo.isOptional(T);
+        if (v.isNull()) {
+            if (is_opt) {
+                v.deinit();
+                return null;
+            } else {
+                v.deinit();
+                return Error.InvalidArgument;
+            }
+        }
+
+        // Convert and free the temporary value unless returning it directly.
+        const result = try self._convertValue(T, &v);
+        // If returning Value itself (or optional Value already handled above), do not deinit.
+        const return_is_value = T == Value or (valtypes.TypeInfo.isOptional(T) and valtypes.TypeInfo.childOfOptional(T) == Value);
+        if (!return_is_value) {
+            v.deinit();
+        }
+        return result;
+    }
+
+    // Generic get by column name
+    pub fn getByName(self: *Row, comptime T: type, name: []const u8) !T {
+        const idx = (try self.result.getColumnIndex(name)) orelse return Error.InvalidColumn;
+        return try self.get(T, idx);
+    }
+
+    fn _convertValue(self: *Row, comptime T: type, val: *Value) !T {
+        const A = self.result._arena.allocator();
+
+        // Optional handling: unwrap, but call-site already checked for nulls.
+        if (valtypes.TypeInfo.isOptional(T)) {
+            const Child = valtypes.TypeInfo.childOfOptional(T);
+            const inner: Child = try self._convertValue(Child, val);
+            return @as(T, inner);
+        }
+
+        // Direct pass-through for Value
+        if (T == Value) {
+            // Return a copy of the handle by value. Caller is responsible to deinit.
+            return val.*;
+        }
+
+        // Scalars
+        if (valtypes.TypeInfo.isBool(T)) {
+            return try val.toBool();
+        }
+        if (valtypes.TypeInfo.isSignedInt(T)) {
+            const x = try val.toInt();
+            return try @import("value.zig").Cast.toInt(T, x);
+        }
+        if (valtypes.TypeInfo.isUnsignedInt(T)) {
+            const x = try val.toUInt();
+            return try @import("value.zig").Cast.toInt(T, x);
+        }
+        if (valtypes.TypeInfo.isFloat(T)) {
+            const x = try val.toFloat();
+            return try @import("value.zig").Cast.toFloat(T, x);
+        }
+        if (valtypes.TypeInfo.isStringLike(T)) {
+            // Disambiguate by actual Kuzu logical type.
+            const vt = val.getType();
+            return switch (vt) {
+                .String => try val.toString(),
+                .Blob => try val.toBlob(),
+                .Uuid => try val.toUuid(),
+                .Decimal => try val.toDecimalString(),
+                else => Error.TypeMismatch,
+            };
+        }
+
+        // Slices (Lists/Arrays): []Child
+        if (valtypes.TypeInfo.isSlice(T)) {
+            const Elem = valtypes.TypeInfo.sliceChild(T);
+            const vt = val.getType();
+            if (vt != .List and vt != .Array and vt != .Map) return Error.TypeMismatch;
+
+            if (vt == .Map) {
+                // Expect slice of struct { key: K, value: V }
+                const ti = @typeInfo(Elem);
+                if (ti != .Struct) return Error.TypeMismatch;
+                const fields = ti.Struct.fields;
+                if (fields.len != 2 or !std.mem.eql(u8, fields[0].name, "key") or !std.mem.eql(u8, fields[1].name, "value")) {
+                    return Error.TypeMismatch;
+                }
+                const K = fields[0].type;
+                const V = fields[1].type;
+                const size = try val.getMapSize();
+                var out = try A.alloc(Elem, @intCast(size));
+                var i: u64 = 0;
+                while (i < size) : (i += 1) {
+                    var k_raw = try val.getMapKey(i);
+                    defer k_raw.deinit();
+                    var v_raw = try val.getMapValue(i);
+                    defer v_raw.deinit();
+                    var item: Elem = undefined;
+                    @field(item, "key") = try self._convertValue(K, &k_raw);
+                    @field(item, "value") = try self._convertValue(V, &v_raw);
+                    out[@intCast(i)] = item;
+                }
+                return out;
+            }
+
+            const len = try val.getListLength();
+            var out = try A.alloc(Elem, @intCast(len));
+            var i: u64 = 0;
+            while (i < len) : (i += 1) {
+                var child = try val.getListElement(i);
+                defer child.deinit();
+                out[@intCast(i)] = try self._convertValue(Elem, &child);
+            }
+            return out;
+        }
+
+        // Struct mapping: Zig struct field names must match Kuzu struct field names
+        const ti = @typeInfo(T);
+        if (ti == .Struct) {
+            const vt = val.getType();
+            switch (vt) {
+                .Struct, .Union, .Node, .Rel, .RecursiveRel => {},
+                else => return Error.TypeMismatch,
+            }
+            var result: T = undefined;
+            const field_count = ti.Struct.fields.len;
+            var i: usize = 0;
+            inline for (ti.Struct.fields) |f| {
+                const kuzu_n = try val.getStructFieldCount();
+                var j: u64 = 0;
+                var found = false;
+                while (j < kuzu_n) : (j += 1) {
+                    const name = try val.getStructFieldName(j);
+                    if (std.mem.eql(u8, name, f.name)) { found = true; break; }
+                }
+                if (!found) return Error.TypeMismatch;
+                var child_val = try val.getStructFieldValue(j);
+                defer child_val.deinit();
+                @field(result, f.name) = try self._convertValue(f.type, &child_val);
+                _ = i;
+            }
+            _ = field_count;
+            return result;
+        }
+
+        @compileError(std.fmt.comptimePrint("Row.get: unsupported target type {s}", .{@typeName(T)}));
     }
 
     // Convenience methods for common types

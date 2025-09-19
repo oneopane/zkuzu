@@ -24,8 +24,8 @@ pub fn main() !void {
     while (try qr.next()) |row_val| {
         const row = row_val;
         defer row.deinit();
-        const name = try row.getStringByName("name");
-        const age = try row.getIntByName("age");
+        const name = try row.getByName([]const u8, "name");
+        const age = try row.getByName(i64, "age");
         std.debug.print("- {s} ({d})\n", .{ name, age });
     }
 

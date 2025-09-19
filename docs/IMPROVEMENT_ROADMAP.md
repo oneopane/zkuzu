@@ -153,23 +153,23 @@ Implement compile-time type checking for value getters, reducing runtime errors.
 
 ### Implementation Checklist
 
-- [ ] **src/query_result.zig**
+- [x] **src/query_result.zig**
   - Implement generic `get(comptime T: type, index: usize) !T` method (ref: pg.zig/src/result.zig:250)
   - Add compile-time type validation (ref: pg.zig/src/result.zig:252-271)
   - Provide better type mismatch error messages
   - Support nullable types properly (ref: pg.zig/src/result.zig:253-258)
 
-- [ ] **src/value.zig** (new file)
+- [x] **src/value.zig** (new file)
   - Create comprehensive value type system
   - Implement type conversions with safety checks
   - Add support for complex types (arrays, structs, maps)
 
-- [ ] **Examples and Documentation**
+- [x] **Examples and Documentation**
   - Update examples to use type-safe accessors
   - Document type mapping between Kuzu and Zig
 
 ### Testing
-- [ ] **src/tests/query_result.zig**
+- [x] **src/tests/query_result.zig**
   - Test all type conversions
   - Test type mismatch detection
   - Test nullable handling
