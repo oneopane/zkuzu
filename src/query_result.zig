@@ -5,6 +5,7 @@ const errors = @import("errors.zig");
 const c = bindings.c;
 const Error = errors.Error;
 const checkState = errors.checkState;
+const ArenaAllocator = std.heap.ArenaAllocator;
 
 // Query result handle
 pub const QueryResult = struct {
@@ -12,11 +13,15 @@ pub const QueryResult = struct {
     allocator: std.mem.Allocator,
     current_row: ?*Row = null,
     name_to_index: ?std.StringHashMapUnmanaged(u64) = null,
+    _arena: *ArenaAllocator,
 
     pub fn init(result: c.kuzu_query_result, allocator: std.mem.Allocator) QueryResult {
+        const arena = allocator.create(ArenaAllocator) catch @panic("arena alloc failed");
+        arena.* = ArenaAllocator.init(allocator);
         return .{
             .result = result,
             .allocator = allocator,
+            ._arena = arena,
         };
     }
 
@@ -27,14 +32,15 @@ pub const QueryResult = struct {
             self.current_row = null;
         }
         if (self.name_to_index) |*m| {
-            var it = m.iterator();
-            while (it.next()) |entry| {
-                self.allocator.free(entry.key_ptr.*);
-            }
+            // Keys are arena-allocated; only free the map storage itself
             m.deinit(self.allocator);
             self.name_to_index = null;
         }
         c.kuzu_query_result_destroy(&self.result);
+        // Release arena last so any borrowed strings remain valid until now
+        const arena = self._arena;
+        arena.deinit();
+        self.allocator.destroy(arena);
     }
 
     // Check if query was successful
@@ -47,6 +53,8 @@ pub const QueryResult = struct {
         const msg_ptr = c.kuzu_query_result_get_error_message(&self.result);
         if (msg_ptr == null) return null;
         const msg_slice = std.mem.span(msg_ptr);
+        // Keep error message owned by the connection allocator (not arena),
+        // since caller may store it beyond this result's lifetime.
         const copy = try self.allocator.dupe(u8, msg_slice);
         c.kuzu_destroy_string(msg_ptr);
         return copy;
@@ -64,7 +72,7 @@ pub const QueryResult = struct {
         try checkState(state);
         if (name_ptr == null) return "";
         const name_slice = std.mem.span(name_ptr);
-        const copy = try self.allocator.dupe(u8, name_slice);
+        const copy = try self._arena.allocator().dupe(u8, name_slice);
         c.kuzu_destroy_string(name_ptr);
         return copy;
     }
@@ -72,19 +80,12 @@ pub const QueryResult = struct {
     fn ensureNameIndexCache(self: *QueryResult) !void {
         if (self.name_to_index != null) return;
         var map: std.StringHashMapUnmanaged(u64) = .{};
-        errdefer {
-            var it = map.iterator();
-            while (it.next()) |entry| {
-                self.allocator.free(entry.key_ptr.*);
-            }
-            map.deinit(self.allocator);
-        }
+        errdefer map.deinit(self.allocator);
         const n = self.getColumnCount();
         var i: u64 = 0;
         while (i < n) : (i += 1) {
             const name = try self.getColumnName(i);
-            // Store owned name in table allocator
-            errdefer self.allocator.free(name);
+            // Column names are arena-owned; map stores pointer only.
             try map.put(self.allocator, name, i);
         }
         self.name_to_index = map;
@@ -166,7 +167,6 @@ pub const Row = struct {
     tuple: c.kuzu_flat_tuple,
     result: *QueryResult,
     allocator: std.mem.Allocator,
-    owned_strings: std.ArrayListUnmanaged([*c]u8) = .{},
     owned_blobs: std.ArrayListUnmanaged([*c]u8) = .{},
     is_active: bool = true,
 
@@ -175,7 +175,6 @@ pub const Row = struct {
             .tuple = tuple,
             .result = result,
             .allocator = allocator,
-            .owned_strings = .{},
             .owned_blobs = .{},
             .is_active = true,
         };
@@ -185,11 +184,7 @@ pub const Row = struct {
         if (!self.is_active) return;
         self.is_active = false;
 
-        // Free any C-allocated strings/blobs obtained from this row
-        for (self.owned_strings.items) |ptr| {
-            if (ptr != null) c.kuzu_destroy_string(ptr);
-        }
-        self.owned_strings.deinit(self.allocator);
+        // Free any C-allocated blobs obtained from this row (strings go to arena)
         for (self.owned_blobs.items) |ptr| {
             if (ptr != null) c.kuzu_destroy_blob(@ptrCast(ptr));
         }
@@ -250,10 +245,11 @@ pub const Row = struct {
         defer c.kuzu_value_destroy(&val);
         var c_str: [*c]u8 = undefined;
         try checkState(c.kuzu_value_get_string(&val, &c_str));
-        // Record to free on row deinit
-        errdefer c.kuzu_destroy_string(c_str);
-        _ = try self.owned_strings.append(self.allocator, c_str);
-        return std.mem.span(c_str);
+        if (c_str == null) return "";
+        const slice = std.mem.span(c_str);
+        const out = try self.result._arena.allocator().dupe(u8, slice);
+        c.kuzu_destroy_string(c_str);
+        return out;
     }
 
     pub fn copyString(self: *Row, allocator: std.mem.Allocator, index: u64) !?[]u8 {
@@ -424,9 +420,9 @@ pub const Value = struct {
         if (c_str == null) return "";
         const slice = std.mem.span(c_str);
         if (self.owner_row) |row| {
-            errdefer c.kuzu_destroy_string(c_str);
-            try row.owned_strings.append(row.allocator, c_str);
-            return slice;
+            const out = try row.result._arena.allocator().dupe(u8, slice);
+            c.kuzu_destroy_string(c_str);
+            return out;
         }
         const copy = try self.allocator.dupe(u8, slice);
         c.kuzu_destroy_string(c_str);
@@ -581,24 +577,14 @@ pub const Value = struct {
         if (self.getType() != .Uuid) return Error.TypeMismatch;
         var c_str: [*c]u8 = undefined;
         try checkState(c.kuzu_value_get_uuid(&self.value, &c_str));
-        if (c_str == null) return "";
-        if (self.owner_row) |row| {
-            errdefer c.kuzu_destroy_string(c_str);
-            _ = try row.owned_strings.append(row.allocator, c_str);
-        }
-        return std.mem.span(c_str);
+        return self.borrowCString(c_str);
     }
 
     pub fn toDecimalString(self: *Value) ![]const u8 {
         if (self.getType() != .Decimal) return Error.TypeMismatch;
         var c_str: [*c]u8 = undefined;
         try checkState(c.kuzu_value_get_decimal_as_string(&self.value, &c_str));
-        if (c_str == null) return "";
-        if (self.owner_row) |row| {
-            errdefer c.kuzu_destroy_string(c_str);
-            _ = try row.owned_strings.append(row.allocator, c_str);
-        }
-        return std.mem.span(c_str);
+        return self.borrowCString(c_str);
     }
 
     pub fn toInternalId(self: *Value) !c.kuzu_internal_id_t {
@@ -613,12 +599,7 @@ pub const Value = struct {
         var c_str: [*c]u8 = undefined;
         const state = c.kuzu_value_get_string(&self.value, &c_str);
         try checkState(state);
-        if (c_str == null) return "";
-        if (self.owner_row) |row| {
-            errdefer c.kuzu_destroy_string(c_str);
-            _ = try row.owned_strings.append(row.allocator, c_str);
-        }
-        return std.mem.span(c_str);
+        return self.borrowCString(c_str);
     }
 
     pub fn toBlob(self: *Value) ![]const u8 {

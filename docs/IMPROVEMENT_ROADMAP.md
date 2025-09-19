@@ -15,27 +15,27 @@ Adopt pg.zig's arena allocator pattern for automatic memory cleanup and preventi
 
 ### Implementation Checklist
 
-- [ ] **src/query_result.zig**
+- [x] **src/query_result.zig**
   - Add `_arena: *ArenaAllocator` field to QueryResult struct (ref: pg.zig/src/result.zig:17)
   - Initialize arena in QueryResult.init() (ref: pg.zig/src/stmt.zig:53-54)
   - Use arena for all string allocations (column names, string values)
   - Clean up arena in QueryResult.deinit() (ref: pg.zig/src/result.zig:50-53)
 
-- [ ] **src/conn.zig**
+- [x] **src/conn.zig**
   - Pass allocator to QueryResult for arena creation
   - Remove manual string duplication in error paths
   - Use arena for temporary allocations during query execution (ref: pg.zig/src/conn.zig:276)
 
-- [ ] **src/prepared_statement.zig**
+- [x] **src/prepared_statement.zig**
   - Update PreparedStatement.execute() to pass allocator for arena
   - Ensure parameter bindings use appropriate lifetime management
 
-- [ ] **src/pool.zig**
+- [x] **src/pool.zig**
   - Ensure pooled connections properly manage allocator contexts
   - Update Transaction helper to work with arena patterns
 
 ### Testing
-- [ ] **src/tests/query_result.zig**
+- [x] **src/tests/query_result.zig**
   - Add tests for memory leak detection
   - Test large result sets for proper cleanup
   - Test error paths for no leaks
@@ -43,43 +43,67 @@ Adopt pg.zig's arena allocator pattern for automatic memory cleanup and preventi
 ## Priority 2: Enhanced Error Handling
 
 ### Overview
-Implement rich error context similar to pg.zig's PostgreSQL error structure, with codes, messages, details, and hints.
+Introduce structured error reporting tailored to Kuzu’s current C API. Kuzu exposes a success/failure state and an error message string; it does not provide PostgreSQL‑style protocol codes nor SQLite’s exhaustive numeric codes. The goals are:
+- Standardize error capture with a `KuzuError` carrying the message, operation context, and a coarse category.
+- Store the last detailed error on the connection for inspection and logging.
+- Integrate with existing state handlers so callers consistently receive both an error union and an inspectable `Conn.err`.
 
-### Reference Implementation
-- **pg.zig/src/proto/error.zig:4-24** - Error struct with rich fields
-- **pg.zig/src/proto/error.zig:30-69** - Error parsing implementation
-- **pg.zig/src/conn.zig:27-30** - Connection error field and data storage
-- **zqlite/src/zqlite.zig:56-159** - Comprehensive error enum mapping
+This is pragmatic: we won’t fabricate PG/SQLite codes. If Kuzu later adds richer fields/codes, `KuzuError` can extend without breaking the API.
+
+### Reference (Conceptual) Implementations
+- **pg.zig/src/conn.zig** – `err` and `_err_data` ownership pattern on the connection.
+- **pg.zig/src/proto/error.zig** – Example of a structured error object (conceptual inspiration only).
+- **zqlite/src/zqlite.zig** – Broad error categories; use as inspiration for categorization, not a 1:1 mapping.
+
+### Design
+- `KuzuError` fields (owned where noted):
+  - `op: enum { connect, query, prepare, execute, bind, config, transaction }`
+  - `category: enum { argument, constraint, transaction, connection, timeout, interrupt, memory, unknown }`
+  - `message: []u8` (owned copy of Kuzu’s message string)
+  - `detail: ?[]u8`, `hint: ?[]u8` (reserved for future Kuzu fields; null for now)
+  - `code: ?[]const u8` (optional string code if Kuzu adds one later)
+  - `raw: ?[]u8` (optional owned raw payload, if available)
+
+- Creation helpers:
+  - `KuzuError.init(allocator, op, message)` – copies `message`, defaults `category = .unknown`.
+  - `KuzuError.categorize()` – heuristics from message (e.g., contains “timeout”, “interrupt”, “constraint”, “transaction”, etc.).
+  - `KuzuError.deinit()` – frees owned fields.
+
+- Connection integration:
+  - Add `Conn.err: ?KuzuError` and `Conn._err_data: ?[]u8`.
+  - Add `Conn.setError(op, msg: []const u8)` and `Conn.clearError()`; keep `last_error_message` for backward compatibility.
+  - Populate `err` on all failure paths (query/prepare/execute/config), calling `categorize()`.
+  - Add `Conn.lastError() -> ?*const KuzuError`.
+
+- Result/statement integration:
+  - When a `QueryResult` indicates failure, fetch the message, call `conn.setError(.query, msg)`, then return the error union.
+  - In `PreparedStatement` binds/execute, use the state handler message to build `KuzuError` with `op = .bind`/`.execute`.
 
 ### Implementation Checklist
 
 - [ ] **src/errors.zig**
-  - Create `KuzuError` struct with fields: code, message, detail, hint, position (ref: pg.zig/src/proto/error.zig:4-24)
-  - Expand Error enum to cover all Kuzu error conditions (ref: zqlite/src/zqlite.zig:56-159)
-  - Add error categorization (constraint, transaction, connection, etc.)
-  - Implement error recovery suggestions
+  - Add `pub const KuzuError` with fields and `init`, `categorize`, `deinit` helpers.
+  - Keep the `Error` error set minimal for flow control (e.g., `QueryFailed`, `PrepareFailed`, `ExecuteFailed`, `InvalidArgument`, `Unknown`).
 
 - [ ] **src/conn.zig**
-  - Add `err: ?KuzuError` field to Conn struct (ref: pg.zig/src/conn.zig:27)
-  - Add `_err_data: ?[]const u8` for error storage (ref: pg.zig/src/conn.zig:30)
-  - Populate detailed error on query failures
-  - Implement error context preservation across operations
-  - Add helper methods for error inspection
+  - Add `err: ?KuzuError` and `_err_data: ?[]u8`.
+  - Implement `setError`, `clearError`, and `lastError()`; ensure error is populated on all failure paths.
 
 - [ ] **src/query_result.zig**
-  - Store error context in failed query results
-  - Provide methods to extract error details
-  - Ensure error messages are properly allocated
+  - On failed result, set `Conn.err` with `op = .query` and propagate.
+  - Ensure any borrowed error strings are duplicated before free.
 
 - [ ] **src/prepared_statement.zig**
-  - Capture detailed bind parameter errors
-  - Provide context for execution failures
+  - For bind/execute failures, build `KuzuError` from fetched messages and store on `Conn`.
 
 ### Testing
 - [ ] **src/tests/errors.zig**
-  - Test all error types and conditions
-  - Verify error message preservation
-  - Test error recovery mechanisms
+  - Simulate failures in `query`, `prepare`, `execute`, and config methods; assert `Conn.err` has correct `op` and a reasonable `category`.
+  - Verify error message preservation and ownership (no leaks, no UAF).
+  - Confirm `clearError()` resets state; `lastErrorMessage()` remains backward compatible.
+
+### Notes
+- Do not emulate PostgreSQL/SQLite error models without upstream support. Extend `KuzuError` if/when Kuzu exposes richer error details.
 
 ## Priority 3: Connection State Management
 
