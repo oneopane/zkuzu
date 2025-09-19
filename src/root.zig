@@ -11,6 +11,8 @@ pub const c = bindings.c;
 pub const Database = database.Database;
 pub const SystemConfig = database.SystemConfig;
 pub const Conn = connection.Conn;
+pub const ConnState = connection.Conn.State;
+pub const ConnStats = connection.Conn.Stats;
 pub const PreparedStatement = connection.PreparedStatement;
 pub const QueryResult = query_result.QueryResult;
 pub const Row = query_result.Row;
@@ -33,4 +35,3 @@ pub fn open(path: [*:0]const u8, config: ?SystemConfig) !Database {
 test "import all tests" {
     std.testing.refAllDecls(@import("tests/mod.zig"));
 }
-

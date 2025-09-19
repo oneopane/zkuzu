@@ -201,6 +201,10 @@ pub fn PreparedStatementType(comptime ConnType: type) type {
         // Execute prepared statement
         pub fn execute(self: *@This()) !QueryResult {
             self.conn.clearError();
+            const prev = try self.conn.beginOp();
+            var ok: bool = false;
+            defer self.conn.endOp(prev, ok, null);
+
             var result: c.kuzu_query_result = std.mem.zeroes(c.kuzu_query_result);
             const state = c.kuzu_connection_execute(&self.conn.conn, &self.stmt, &result);
             if (result._query_result == null) {
@@ -231,6 +235,8 @@ pub fn PreparedStatementType(comptime ConnType: type) type {
                 return Error.ExecuteFailed;
             }
 
+            ok = true;
+            self.conn.stats.total_executes += 1;
             return q;
         }
     };

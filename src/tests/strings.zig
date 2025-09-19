@@ -7,4 +7,3 @@ test "toCString allocates zero-terminated" {
     defer a.free(s);
     try std.testing.expectEqual(@as(u8, 0), s[3]);
 }
-

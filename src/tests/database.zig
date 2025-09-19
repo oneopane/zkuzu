@@ -6,4 +6,3 @@ test "system config toC compiles" {
     const c_cfg = cfg.toC();
     std.mem.doNotOptimizeAway(c_cfg);
 }
-

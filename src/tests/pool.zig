@@ -144,4 +144,3 @@ test "pool.withTransaction commit and rollback" {
     defer qr2.deinit();
     try testing.expectEqual(@as(?*zkuzu.Row, null), try qr2.next());
 }
-

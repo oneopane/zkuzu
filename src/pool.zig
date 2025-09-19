@@ -94,16 +94,41 @@ pub const Pool = struct {
     // Acquire a connection from the pool
     pub fn acquire(self: *Pool) !Conn {
         self.mutex.lock();
-        defer self.mutex.unlock();
 
         const now = std.time.timestamp();
 
         // Look for an available connection
-        for (self.connections.items) |*pooled| {
-            if (!pooled.in_use) {
-                pooled.in_use = true;
-                pooled.last_used = now;
-                return pooled.conn;
+        var idx: ?usize = null;
+        var i: usize = 0;
+        while (i < self.connections.items.len) : (i += 1) {
+            if (!self.connections.items[i].in_use) { idx = i; break; }
+        }
+        if (idx) |pick| {
+            var pooled_ptr = &self.connections.items[pick];
+            var tmp = pooled_ptr.conn;
+            pooled_ptr.in_use = true;
+            pooled_ptr.last_used = now;
+            self.mutex.unlock();
+
+            // Validate outside the lock
+            if (tmp.validate()) |_| {
+                return tmp;
+            } else |_| {
+                // Attempt recovery then re-validate
+                tmp.recover() catch {};
+                if (tmp.validate()) |_| {
+                    return tmp;
+                }
+                // Replacement path
+                var new_conn = try self.database.connection();
+                // Update pooled slot with the new connection
+                self.mutex.lock();
+                self.connections.items[pick].conn.deinit();
+                self.connections.items[pick].conn = new_conn;
+                self.connections.items[pick].in_use = true;
+                self.connections.items[pick].last_used = std.time.timestamp();
+                self.mutex.unlock();
+                return new_conn;
             }
         }
 
@@ -111,15 +136,24 @@ pub const Pool = struct {
         if (self.connections.items.len < self.max_connections) {
             var conn = try self.database.connection();
             errdefer conn.deinit();
-            try self.connections.append(self.allocator, .{
+            // Validate new connection right away (best-effort)
+            conn.validate() catch {};
+            if (self.connections.append(self.allocator, .{
                 .conn = conn,
                 .in_use = true,
                 .last_used = now,
-            });
-            return conn;
+            })) |_| {
+                self.mutex.unlock();
+                return conn;
+            } else |append_err| {
+                self.mutex.unlock();
+                conn.deinit();
+                return append_err;
+            }
         }
 
         // All connections are in use and we've reached the limit
+        self.mutex.unlock();
         return error.PoolExhausted;
     }
 
@@ -232,6 +266,21 @@ pub const Pool = struct {
             } else {
                 i += 1;
             }
+        }
+    }
+
+    // Health check all pooled connections
+    pub fn healthCheckAll(self: *Pool) !void {
+        self.mutex.lock();
+        const len = self.connections.items.len;
+        var snapshots = try self.allocator.alloc(Conn, len);
+        defer self.allocator.free(snapshots);
+        var i: usize = 0;
+        while (i < len) : (i += 1) snapshots[i] = self.connections.items[i].conn;
+        self.mutex.unlock();
+
+        for (snapshots) |*cconn| {
+            cconn.validate() catch {};
         }
     }
 };

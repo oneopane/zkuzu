@@ -24,4 +24,3 @@ test "prepared statement minimal" {
         return error.UnexpectedEmpty;
     }
 }
-

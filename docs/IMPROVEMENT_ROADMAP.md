@@ -118,25 +118,24 @@ Implement a proper state machine for connection lifecycle, similar to pg.zig's a
 
 ### Implementation Checklist
 
-- [ ] **src/conn.zig**
-  - Add `_state: State` enum field with states: idle, in_transaction, in_query, failed (ref: pg.zig/src/conn.zig:64-75)
+- [x] **src/conn.zig**
+  - Add `state: State` enum field with states: idle, in_transaction, in_query, failed (ref: pg.zig/src/conn.zig:64-75)
   - Implement state transitions for all operations (ref: pg.zig/src/conn.zig:355,393,459)
   - Add state validation before operations
   - Set fail state on errors (ref: pg.zig/src/conn.zig:454,477,502)
   - Implement automatic recovery from failed state
 
-- [ ] **src/pool.zig**
+- [x] **src/pool.zig**
   - Check connection state before returning from pool
   - Implement health check mechanism (ref: pg.zig/src/pool.zig:200-260)
   - Add automatic reconnection for failed connections
   - Track connection statistics
 
-- [ ] **src/database.zig**
-  - Add connection validation methods
-  - Implement connection reset functionality
+- [x] Implementation note
+  - Connection validation and reset are implemented on `Conn` (`validate()`, `recover()`) and integrated into the pool rather than on `Database`. No additional `Database` wrappers are required.
 
 ### Testing
-- [ ] **src/tests/conn.zig**
+- [x] **src/tests/conn.zig**
   - Test state transitions
   - Test recovery from failed states
   - Test concurrent state management
