@@ -2,40 +2,48 @@
 
 This document outlines the improvements needed to bring zkuzu up to the maturity level of pg.zig and zqlite, based on a comprehensive comparison of the three libraries.
 
+Status summary (current code review):
+- Priority 1 (Memory Management) – implemented in zkuzu.
+- Priority 2 (Enhanced Error Handling) – implemented in zkuzu with `KuzuError`, connection `err`, and tests.
+- Priority 3 (Connection State) – plan to migrate to a lightweight guard; current code uses a robust state machine with recovery.
+- Priority 4 (Type-Safe Accessors) – implemented via `Row.get(T, idx|name)` and helpers.
+- Priority 5 (Comprehensive Testing) – largely implemented; several targeted scenarios remain.
+- Priorities 6–8 – next areas of focus.
+
 ## Priority 1: Memory Management - Arena Allocator Pattern
 
 ### Overview
 Adopt pg.zig's arena allocator pattern for automatic memory cleanup and prevention of memory leaks. Each QueryResult should own an arena that gets cleaned up on deinit().
 
 ### Reference Implementation
-- **pg.zig/src/result.zig:17** - Result struct with `_arena: *ArenaAllocator` field
-- **pg.zig/src/result.zig:31-54** - Result.deinit() showing arena cleanup pattern
-- **pg.zig/src/stmt.zig:53-54** - Arena initialization pattern
-- **pg.zig/src/conn.zig:276** - Creating arena for describe operations
+- pg.zig/src/result.zig:17 - Result struct with `_arena: *ArenaAllocator` field
+- pg.zig/src/result.zig:31-54 - Result.deinit() showing arena cleanup pattern
+- pg.zig/src/stmt.zig:53-54 - Arena initialization pattern
+- pg.zig/src/conn.zig:276 - Creating arena for describe operations
 
 ### Implementation Checklist
 
-- [x] **src/query_result.zig**
+- [x] src/query_result.zig
   - Add `_arena: *ArenaAllocator` field to QueryResult struct (ref: pg.zig/src/result.zig:17)
   - Initialize arena in QueryResult.init() (ref: pg.zig/src/stmt.zig:53-54)
   - Use arena for all string allocations (column names, string values)
   - Clean up arena in QueryResult.deinit() (ref: pg.zig/src/result.zig:50-53)
 
-- [x] **src/conn.zig**
+- [x] src/conn.zig
   - Pass allocator to QueryResult for arena creation
   - Remove manual string duplication in error paths
   - Use arena for temporary allocations during query execution (ref: pg.zig/src/conn.zig:276)
 
-- [x] **src/prepared_statement.zig**
+- [x] src/prepared_statement.zig
   - Update PreparedStatement.execute() to pass allocator for arena
   - Ensure parameter bindings use appropriate lifetime management
 
-- [x] **src/pool.zig**
+- [x] src/pool.zig
   - Ensure pooled connections properly manage allocator contexts
   - Update Transaction helper to work with arena patterns
 
 ### Testing
-- [x] **src/tests/query_result.zig**
+- [x] src/tests/query_result.zig
   - Add tests for memory leak detection
   - Test large result sets for proper cleanup
   - Test error paths for no leaks
@@ -51,9 +59,9 @@ Introduce structured error reporting tailored to Kuzu’s current C API. Kuzu ex
 This is pragmatic: we won’t fabricate PG/SQLite codes. If Kuzu later adds richer fields/codes, `KuzuError` can extend without breaking the API.
 
 ### Reference (Conceptual) Implementations
-- **pg.zig/src/conn.zig** – `err` and `_err_data` ownership pattern on the connection.
-- **pg.zig/src/proto/error.zig** – Example of a structured error object (conceptual inspiration only).
-- **zqlite/src/zqlite.zig** – Broad error categories; use as inspiration for categorization, not a 1:1 mapping.
+- pg.zig/src/conn.zig – `err` and `_err_data` ownership pattern on the connection.
+- pg.zig/src/proto/error.zig – Example of a structured error object (conceptual inspiration only).
+- zqlite/src/zqlite.zig – Broad error categories; use as inspiration for categorization, not a 1:1 mapping.
 
 ### Design
 - `KuzuError` fields (owned where noted):
@@ -81,64 +89,44 @@ This is pragmatic: we won’t fabricate PG/SQLite codes. If Kuzu later adds rich
 
 ### Implementation Checklist
 
-- [x] **src/errors.zig**
-  - Add `pub const KuzuError` with fields and `init`, `categorize`, `deinit` helpers.
+- [x] src/errors.zig
+  - Add `KuzuError` with fields and `init`, `categorize`, `deinit` helpers.
   - Keep the `Error` error set minimal for flow control (e.g., `QueryFailed`, `PrepareFailed`, `ExecuteFailed`, `InvalidArgument`, `Unknown`).
 
-- [x] **src/conn.zig**
+- [x] src/conn.zig
   - Add `err: ?KuzuError` and `_err_data: ?[]u8`.
   - Implement `setError`, `clearError`, and `lastError()`; ensure error is populated on all failure paths.
 
-- [x] **src/query_result.zig**
+- [x] src/query_result.zig
   - On failed result, set `Conn.err` with `op = .query` and propagate.
   - Ensure any borrowed error strings are duplicated before free.
 
-- [x] **src/prepared_statement.zig**
+- [x] src/prepared_statement.zig
   - For bind/execute failures, build `KuzuError` from fetched messages and store on `Conn`.
 
 ### Testing
-- [x] **src/tests/errors.zig**
+- [x] src/tests/errors.zig
   - Simulate failures in `query`, `prepare`, `execute`, and config methods; assert `Conn.err` has correct `op` and a reasonable `category`.
   - Verify error message preservation and ownership (no leaks, no UAF).
   - Confirm `clearError()` resets state; `lastErrorMessage()` remains backward compatible.
 
-### Notes
-- Do not emulate PostgreSQL/SQLite error models without upstream support. Extend `KuzuError` if/when Kuzu exposes richer error details.
-
 ## Priority 3: Connection State Management
 
 ### Overview
-Implement a proper state machine for connection lifecycle, similar to pg.zig's approach.
+Implement a proper state guard for connection lifecycle, with a simpler, Kuzu‑aligned approach.
 
-### Reference Implementation
-- **pg.zig/src/conn.zig:64-75** - State enum definition
-- **pg.zig/src/conn.zig:173,355,393,459-461** - State transitions
-- **pg.zig/src/conn.zig:454,477,502** - Setting fail state on errors
-- **pg.zig/src/pool.zig:200-260** - Reconnector for failed connections
+Current implementation uses a full state machine with mutex protection and automatic recovery, and tests assert state transitions. We plan to migrate to lightweight guards better aligned with Kuzu semantics.
 
 ### Implementation Checklist
 
-- [x] **src/conn.zig**
-  - Add `state: State` enum field with states: idle, in_transaction, in_query, failed (ref: pg.zig/src/conn.zig:64-75)
-  - Implement state transitions for all operations (ref: pg.zig/src/conn.zig:355,393,459)
-  - Add state validation before operations
-  - Set fail state on errors (ref: pg.zig/src/conn.zig:454,477,502)
-  - Implement automatic recovery from failed state
-
-- [x] **src/pool.zig**
-  - Check connection state before returning from pool
-  - Implement health check mechanism (ref: pg.zig/src/pool.zig:200-260)
-  - Add automatic reconnection for failed connections
-  - Track connection statistics
-
-- [x] Implementation note
-  - Connection validation and reset are implemented on `Conn` (`validate()`, `recover()`) and integrated into the pool rather than on `Database`. No additional `Database` wrappers are required.
+- [ ] Replace `.state` machine with lightweight guards: `in_result: bool`, `transaction_active: bool`, and a mutex.
+- [ ] Enforce no nested queries while a result is active; clear flag on `QueryResult.deinit()`.
+- [ ] Toggle `transaction_active` in `beginTransaction/commit/rollback`.
+- [ ] Update pool validation to respect lightweight busy checks.
+- [ ] Update tests to remove strong coupling to the old state enum.
 
 ### Testing
-- [x] **src/tests/conn.zig**
-  - Test state transitions
-  - Test recovery from failed states
-  - Test concurrent state management
+- [ ] Adjust `src/tests/conn.zig` to validate guard behavior and recovery.
 
 ## Priority 4: Type-Safe Value Access
 
@@ -146,33 +134,28 @@ Implement a proper state machine for connection lifecycle, similar to pg.zig's a
 Implement compile-time type checking for value getters, reducing runtime errors.
 
 ### Reference Implementation
-- **pg.zig/src/result.zig:250-275** - Generic get() method with compile-time type handling
-- **pg.zig/src/result.zig:252-271** - Type switch handling optionals and custom types
-- **pg.zig/src/result.zig:277-281** - getCol() by name implementation
-- **pg.zig/src/lib.zig:269** - assertNotNull helper
+- pg.zig/src/result.zig:250-275 - Generic get() method with compile-time type handling
+- pg.zig/src/result.zig:252-271 - Type switch handling optionals and custom types
+- pg.zig/src/result.zig:277-281 - getCol() by name implementation
+- pg.zig/src/lib.zig:269 - assertNotNull helper
 
 ### Implementation Checklist
 
-- [x] **src/query_result.zig**
-  - Implement generic `get(comptime T: type, index: usize) !T` method (ref: pg.zig/src/result.zig:250)
-  - Add compile-time type validation (ref: pg.zig/src/result.zig:252-271)
-  - Provide better type mismatch error messages
-  - Support nullable types properly (ref: pg.zig/src/result.zig:253-258)
+- [x] src/query_result.zig / Row
+  - Implement generic `Row.get(comptime T: type, index: usize) !T` with compile-time validation and nullable support.
+  - Provide clear type mismatch/overflow errors.
 
-- [x] **src/value.zig** (new file)
-  - Create comprehensive value type system
-  - Implement type conversions with safety checks
-  - Add support for complex types (arrays, structs, maps)
+- [x] src/value.zig
+  - Comprehensive value type system and safe conversions.
+  - Support complex types (arrays/lists, structs/nodes/rels/maps, recursive rels).
 
-- [x] **Examples and Documentation**
-  - Update examples to use type-safe accessors
-  - Document type mapping between Kuzu and Zig
+- [ ] Documentation
+  - [x] Examples use type-safe accessors (see `examples/basic.zig`, `examples/prepared.zig`).
+  - [ ] Document type mapping between Kuzu logical types and Zig types.
 
 ### Testing
-- [x] **src/tests/query_result.zig**
-  - Test all type conversions
-  - Test type mismatch detection
-  - Test nullable handling
+- [x] src/tests/query_result.zig
+  - Scalars, nullables, lists, conversion bounds, and mismatch detection.
 
 ## Priority 5: Comprehensive Testing
 
@@ -180,35 +163,41 @@ Implement compile-time type checking for value getters, reducing runtime errors.
 Expand test coverage to match pg.zig's comprehensive testing approach.
 
 ### Reference Implementation
-- **zqlite/src/pool.zig:110-142** - Pool concurrency test pattern
-- **zqlite/src/pool.zig:126-132** - Multi-thread test spawning
-- **zqlite/src/pool.zig:119-122** - Test callbacks for connection setup
-- **pg.zig/src/t.zig** - Test helper utilities
+- zqlite/src/pool.zig:110-142 - Pool concurrency test pattern
+- zqlite/src/pool.zig:126-132 - Multi-thread test spawning
+- zqlite/src/pool.zig:119-122 - Test callbacks for connection setup
+- pg.zig/src/t.zig - Test helper utilities
 
 ### Implementation Checklist
 
-- [x] **src/tests/integration.zig** (new file)
-  - End-to-end workflow tests
-  - Multi-threaded connection tests (ref: zqlite/src/pool.zig:126-132)
-  - Large dataset handling tests
-  - Performance benchmarks
+- [x] src/tests/integration.zig
+  - End-to-end workflow and multi-threaded usage via pool.
+  - Large dataset timing sample.
 
-- [x] **src/tests/edge_cases.zig** (new file)
-  - Null value handling
-  - Empty result sets
-  - Maximum parameter limits
-  - Connection loss scenarios
+- [x] src/tests/edge_cases.zig
+  - Null handling, empty results, max parameter stress.
+  - Connection failure/validation/recovery.
 
-- [x] **src/tests/transactions.zig** (new file)
-  - Nested transaction behavior
-  - Rollback scenarios
-  - Concurrent transaction tests (ref: zqlite/src/pool.zig:149-157)
-  - Deadlock handling
+- [x] src/tests/transactions.zig
+  - Nested begin failure, rollback scenarios, concurrent pool transactions, single-connection exhaustion.
 
-- [x] **test_runner.zig**
-  - Add test utilities and helpers (ref: pg.zig/src/t.zig)
-  - Implement test database setup/teardown (ref: zqlite/src/pool.zig:161-176)
-  - Add performance measurement
+- [x] src/tests/pool.zig
+  - Pool basics, helpers, exhaustion, query via pool.
+
+- [x] src/tests/errors.zig
+  - KuzuError propagation across ops; clear/reset lifecycle.
+
+- [x] src/tests/conn.zig
+  - Connection config knobs; state transitions and recovery; pool validation under concurrency.
+
+- [x] test_runner.zig
+  - Custom runner with per-test leak check and timing summary.
+
+- [ ] Add targeted scenarios
+  - Interrupt/timeout behavior under load.
+  - Constraint violation paths.
+  - Pool `cleanupIdle` lifecycle.
+  - Additional value conversions: blob/uuid/decimal/internal_id coverage.
 
 ## Priority 6: API Documentation
 
@@ -217,22 +206,14 @@ Add comprehensive inline documentation for all public APIs.
 
 ### Implementation Checklist
 
-- [x] **All public functions in src/**
-  - Add doc comments with description
-  - Document parameters and return values
-  - Include usage examples
-  - Document error conditions
+- [ ] **All public functions in src/**
+  - Many doc comments exist; complete coverage and examples still needed.
 
 - [x] **README.md**
-  - Expand with API reference section
-  - Add troubleshooting guide
-  - Include performance tips
-  - Add migration guide from other databases
+  - API overview/reference, troubleshooting, performance tips, migration guide present.
 
 - [x] **examples/**
-  - Add advanced examples (transactions, pooling, prepared statements)
-  - Create performance optimization examples
-  - Add error handling examples
+  - Advanced examples for prepared statements, pooling, transactions, performance.
 
 ## Priority 7: Additional Features
 
@@ -240,10 +221,10 @@ Add comprehensive inline documentation for all public APIs.
 Add features that exist in mature libraries but are missing in zkuzu.
 
 ### Reference Implementation
-- **pg.zig/src/metrics.zig:5-21** - Metrics structure and counters
-- **pg.zig/src/metrics.zig:32-56** - Metric collection functions
-- **pg.zig/src/pool.zig:200-260** - Reconnector with health checks
-- **zqlite/src/pool.zig:119-122** - Connection callbacks pattern
+- pg.zig/src/metrics.zig:5-21 - Metrics structure and counters
+- pg.zig/src/metrics.zig:32-56 - Metric collection functions
+- pg.zig/src/pool.zig:200-260 - Reconnector with health checks
+- zqlite/src/pool.zig:119-122 - Connection callbacks pattern
 
 ### Implementation Checklist
 
@@ -291,25 +272,25 @@ Improve build configuration and dependency management.
 ## Implementation Strategy
 
 ### Phase 1: Foundation (Priorities 1-3)
-**Timeline: 2-3 weeks**
+Timeline: 2-3 weeks
 - Focus on memory management, error handling, and state management
 - These form the foundation for other improvements
 - Must be done before other changes to avoid rework
 
 ### Phase 2: Type Safety and Testing (Priorities 4-5)
-**Timeline: 2 weeks**
+Timeline: 2 weeks
 - Build on the solid foundation from Phase 1
 - Improve developer experience and reliability
 - Ensure no regressions with comprehensive tests
 
 ### Phase 3: Documentation and Polish (Priorities 6-7)
-**Timeline: 1-2 weeks**
+Timeline: 1-2 weeks
 - Document all improvements
 - Add nice-to-have features
 - Prepare for wider adoption
 
 ### Phase 4: Advanced Features (Priority 8)
-**Timeline: Ongoing**
+Timeline: Ongoing
 - Implement based on user feedback
 - Keep pace with Kuzu updates
 - Maintain compatibility
@@ -332,3 +313,4 @@ Improve build configuration and dependency management.
 - Add deprecation notices for breaking changes
 - Consider creating a v2 branch for major changes
 - Regular benchmarking against C API performance
+
