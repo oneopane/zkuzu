@@ -2,6 +2,29 @@
     .name = .zkuzu,
     .version = "0.1.0",
     .fingerprint = 0x3ee2c105cdbe324e,
-    .dependencies = .{},
+    .dependencies = .{
+        // Prebuilt Kuzu shared libraries by platform (v0.11.2)
+        .kuzu_osx = .{
+            .url = "https://github.com/kuzudb/kuzu/releases/download/v0.11.2/libkuzu-osx-universal.tar.gz",
+            .hash = "N-V-__8AAETRDQLAq625_lm2DsVBcbj3vBpg5iWsfn_YBp9X",
+        },
+        .kuzu_linux_x86_64 = .{
+            .url = "https://github.com/kuzudb/kuzu/releases/download/v0.11.2/libkuzu-linux-x86_64.tar.gz",
+            .hash = "N-V-__8AAEwKagE44clOYBYRa48lDzYulZWdyOsVETOY4Yaw",
+        },
+        .kuzu_linux_aarch64 = .{
+            .url = "https://github.com/kuzudb/kuzu/releases/download/v0.11.2/libkuzu-linux-aarch64.tar.gz",
+            .hash = "N-V-__8AAEQJRQHv_QKIF6kJD55lMWz8RsTcfJmCL_vk4gBb",
+        },
+        .kuzu_win_x86_64 = .{
+            .url = "https://github.com/kuzudb/kuzu/releases/download/v0.11.2/libkuzu-windows-x86_64.zip",
+            .hash = "N-V-__8AAD-l2gDzoZaERsOPzcDRgNsq-TLgRum_A_ldQXen",
+        },
+        // Source tarball pin (optional, for future from-source builds)
+        .kuzu_src = .{
+            .url = "https://github.com/kuzudb/kuzu/archive/refs/tags/v0.11.2.tar.gz",
+            .hash = "N-V-__8AAFU-VxmMwMkOd5-Q9d5x5Oa0WWY437T7RxMmuTyG",
+        },
+    },
     .paths = .{""},
 }

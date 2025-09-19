@@ -15,35 +15,55 @@ A Zig wrapper for [Kuzu](https://kuzudb.com/), an embedded graph database, simil
 
 ## Setup Instructions
 
-### 1. Build Kuzu
+### 1. Choose a Kuzu Provider (no manual copies needed)
 
-First, build Kuzu with C API support:
+By default, builds use a prebuilt Kuzu binary fetched via `build.zig.zon` (pinned to v0.11.2), and link to it dynamically. You can switch providers:
 
-```bash
-# From zkuzu directory
-make build-kuzu
+- Prebuilt (default): fetch platform archive from GitHub releases.
+- System: link against a system-installed Kuzu (provide include/lib dirs).
+- Local: use files in `lib/` (static or shared).
+- Source: build Kuzu from source via CMake, using Zig's toolchain.
 
-# Or manually:
-cd /path/to/kuzu
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_KUZU_SHELL=OFF -DBUILD_C_API=ON
-make -j$(nproc)
-```
-
-### 2. Copy Library Files
-
-After building Kuzu, copy the static library to the zkuzu lib directory:
+Examples:
 
 ```bash
-# Copy the main library (choose one):
-cp /path/to/kuzu/build/src/libkuzu.a lib/
-# OR if C API is built separately:
-cp /path/to/kuzu/build/src/c_api/libkuzu_c_api.a lib/libkuzu.a
+# Prebuilt (default) — fetches per-OS archive on demand
+zig build example-basic -Dkuzu-provider=prebuilt
+
+# System — you supply include/lib dirs
+zig build example-basic -Dkuzu-provider=system \
+  -Dkuzu-include-dir=/usr/local/include \
+  -Dkuzu-lib-dir=/usr/local/lib
+
+# Local — use lib/ folder (supports static or shared)
+zig build example-basic -Dkuzu-provider=local
+
+# Source — builds Kuzu from source with CMake using zig cc/c++
+zig build example-basic -Dkuzu-provider=source
+  # Requires CMake installed; builds in zig-cache/kuzu-src-build
 ```
 
-The header file (`kuzu.h`) has already been copied to `lib/`.
+When running installed binaries directly (outside `zig build` execution), you may need to set the dynamic library search path for shared Kuzu builds:
 
-### 3. Build and Test
+- macOS: export DYLD_LIBRARY_PATH=/path/to/kuzu/lib:$DYLD_LIBRARY_PATH
+- Linux: export LD_LIBRARY_PATH=/path/to/kuzu/lib:$LD_LIBRARY_PATH
+- Windows: ensure the directory with the Kuzu DLL is on PATH
+
+For macOS (universal) / Linux (x86_64/aarch64) / Windows (x86_64), prebuilt URLs and hashes are pinned in `build.zig.zon`. The build downloads only when first used and then caches the archive.
+
+Manual (Local provider): If you prefer to vendor files yourself, place either the shared library or the static library in `lib/` and build with `-Dkuzu-provider=local`:
+
+```bash
+# Shared (from release asset):
+#   macOS:  cp libkuzu.dylib lib/
+#   Linux:  cp libkuzu.so lib/
+# Static (from source build):
+#   cp /path/to/kuzu/build/src/libkuzu.a lib/
+```
+
+The header file (`kuzu.h`) is provided by the provider (prebuilt/system/source). For the local provider, ensure `lib/kuzu.h` is present.
+
+### 2. Build and Test
 
 ```bash
 # Run tests
@@ -52,10 +72,6 @@ zig build test
 # Run examples
 zig build example-basic
 zig build example-prepared
-
-# Or use make:
-make test
-make example
 ```
 
 ## Quickstart: Exec vs Query
@@ -196,20 +212,19 @@ zkuzu/
 │   ├── root.zig       # Main module exports
 │   ├── conn.zig       # Connection and query handling
 │   └── pool.zig       # Connection pooling
-├── lib/
-│   ├── kuzu.h         # Kuzu C API header
-│   └── libkuzu.a      # Kuzu static library (needs to be built)
+├── lib/               # Optional: only used with local provider
+│   ├── kuzu.h         # Kuzu C API header (for local provider)
+│   └── libkuzu.*      # Kuzu static/shared library (for local provider)
 ├── examples/
 │   ├── basic.zig      # Exec vs query, scanning rows
 │   └── prepared.zig   # Typed binds/getters, temporals
 ├── test_runner.zig    # Test runner
-├── Makefile           # Build shortcuts
 └── README.md          # This file
 ```
 
 ## Notes
 
-- Kuzu must be built with C API support (`-DBUILD_C_API=ON`). See Makefile helpers.
+- Prebuilt and system providers link to a shared Kuzu library. The source provider builds Kuzu with CMake using zig cc/c++ and links the resulting shared library. The local provider can use either static or shared libraries that you place in `lib/`.
 - The wrapper follows similar patterns to zqlite for consistency.
 - Lifetimes: string/blob slices returned from rows are borrowed. Process them before the next `next()` or copy via `copyString/copyBlob`.
 - Platform-specific linking is handled in build.zig.

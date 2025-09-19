@@ -139,7 +139,7 @@ pub fn main() !void {
     std.debug.print("\n--- Transaction Example ---\n", .{});
     try conn.beginTransaction();
 
-    _ = try conn.query("CREATE (:Person {name: 'David', age: 28, email: 'david@example.com'})");
+    _ = try conn.query("MERGE (:Person {name: 'David', age: 28, email: 'david@example.com'})");
     _ = try conn.query("MATCH (d:Person {name: 'David'}), (c:Person {name: 'Charlie'}) CREATE (d)-[:Knows {since: 2023}]->(c)");
 
     // Commit the transaction
@@ -174,7 +174,7 @@ pub fn main() !void {
     std.debug.print("Query execution time: {d:.2}ms\n", .{summary.execution_time_ms});
 
     std.debug.print("\n--- Error Handling Demo ---\n", .{});
-    const invalid_result = blk: {
+    var invalid_result = blk: {
         const res = conn.query("RETURN 1 +") catch |err| switch (err) {
             zkuzu.Error.QueryFailed => {
                 if (conn.lastErrorMessage()) |msg| {
@@ -188,7 +188,7 @@ pub fn main() !void {
         };
         break :blk res;
     };
-    if (invalid_result) |qr_bad| {
+    if (invalid_result) |*qr_bad| {
         defer qr_bad.deinit();
         std.debug.print("Unexpected success for invalid query\n", .{});
     }
