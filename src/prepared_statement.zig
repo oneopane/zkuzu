@@ -23,7 +23,8 @@ pub fn PreparedStatementType(comptime ConnType: type) type {
 
         fn messageSink(addr: usize, msg: []const u8) void {
             const conn_ptr = @as(*ConnType, @ptrFromInt(addr));
-            conn_ptr.setLastErrorMessageCopy(msg);
+            // Bind-time errors
+            conn_ptr.setError(.bind, msg);
         }
 
         fn fetchMessage(addr: usize, allocator: std.mem.Allocator) errors.Error!?[]u8 {
@@ -199,14 +200,14 @@ pub fn PreparedStatementType(comptime ConnType: type) type {
 
         // Execute prepared statement
         pub fn execute(self: *@This()) !QueryResult {
-            self.conn.setLastErrorMessage(null);
+            self.conn.clearError();
             var result: c.kuzu_query_result = std.mem.zeroes(c.kuzu_query_result);
             const state = c.kuzu_connection_execute(&self.conn.conn, &self.stmt, &result);
             if (result._query_result == null) {
                 if (state != c.KuzuSuccess) {
-                    self.conn.setLastErrorMessageCopy("kuzu_connection_execute failed");
+                    self.conn.setError(.execute, "kuzu_connection_execute failed");
                 } else {
-                    self.conn.setLastErrorMessageCopy("kuzu_connection_execute returned no result");
+                    self.conn.setError(.execute, "kuzu_connection_execute returned no result");
                 }
                 return Error.ExecuteFailed;
             }
@@ -214,19 +215,19 @@ pub fn PreparedStatementType(comptime ConnType: type) type {
             var q = QueryResult.init(result, self.allocator);
             if (!q.isSuccess()) {
                 const msg_opt = q.getErrorMessage() catch null;
-                self.conn.setLastErrorMessage(msg_opt);
-                q.deinit();
-                if (msg_opt) |msg| {
-                    if (msg.len > 0) {
-                        std.debug.print("Kuzu execute failed: {s}\n", .{msg});
-                    }
+                if (msg_opt) |owned| {
+                    self.conn.setError(.execute, owned);
+                    self.allocator.free(owned);
+                } else {
+                    self.conn.setError(.execute, "");
                 }
+                q.deinit();
                 return Error.ExecuteFailed;
             }
 
             if (state != c.KuzuSuccess) {
                 q.deinit();
-                try self.handleState(state, "kuzu_connection_execute failed", Error.ExecuteFailed);
+                self.conn.setError(.execute, "kuzu_connection_execute failed");
                 return Error.ExecuteFailed;
             }
 

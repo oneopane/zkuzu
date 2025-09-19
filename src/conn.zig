@@ -11,11 +11,14 @@ const checkState = errors.checkState;
 const checkStateWith = errors.checkStateWith;
 const toCString = strings.toCString;
 const QueryResult = query_result.QueryResult;
+const KuzuError = errors.KuzuError;
 
 pub const Conn = struct {
     conn: c.kuzu_connection,
     allocator: std.mem.Allocator,
     last_error_message: ?[]u8 = null,
+    err: ?KuzuError = null,
+    _err_data: ?[]u8 = null,
 
     pub fn init(db_handle: *c.kuzu_database, allocator: std.mem.Allocator) !Conn {
         var conn_handle: c.kuzu_connection = undefined;
@@ -30,7 +33,7 @@ pub const Conn = struct {
     }
 
     pub fn deinit(self: *Conn) void {
-        self.releaseLastErrorMessage();
+        self.clearError();
         c.kuzu_connection_destroy(&self.conn);
     }
 
@@ -58,7 +61,7 @@ pub const Conn = struct {
 
     fn stateMessageSink(addr: usize, msg: []const u8) void {
         const conn_ptr = @as(*Conn, @ptrFromInt(addr));
-        conn_ptr.setLastErrorMessageCopy(msg);
+        conn_ptr.setError(.config, msg);
     }
 
     fn makeStateHandler(self: *Conn, fallback: []const u8, err: Error) errors.StateErrorHandler {
@@ -78,19 +81,53 @@ pub const Conn = struct {
         return null;
     }
 
+    pub fn lastError(self: *Conn) ?*const KuzuError {
+        if (self.err) |*e| return e; else return null;
+    }
+
+    pub fn clearError(self: *Conn) void {
+        if (self.err) |*e| {
+            e.deinit();
+            self.err = null;
+        }
+        if (self._err_data) |buf| {
+            self.allocator.free(buf);
+            self._err_data = null;
+        }
+        self.releaseLastErrorMessage();
+    }
+
+    pub fn setError(self: *Conn, op: KuzuError.Op, msg: []const u8) void {
+        // Reset previous error state
+        self.clearError();
+        // Build structured error (best-effort; avoid throwing here)
+        var new_err: ?KuzuError = null;
+        new_err = KuzuError.init(self.allocator, op, msg) catch null;
+        if (new_err) |e| {
+            // Keep a copy of message for backward compatibility
+            // Note: e.message is owned; duplicate for last_error_message independently.
+            // If duplication fails, we still keep structured error.
+            self.last_error_message = self.allocator.dupe(u8, e.message) catch null;
+            self.err = e;
+        } else {
+            // Fall back to legacy message only
+            self.setLastErrorMessageCopy(msg);
+        }
+    }
+
     pub fn query(self: *Conn, query_str: []const u8) !QueryResult {
         const c_query = try toCString(self.allocator, query_str);
         defer self.allocator.free(c_query);
 
-        self.setLastErrorMessage(null);
+        self.clearError();
 
         var result: c.kuzu_query_result = std.mem.zeroes(c.kuzu_query_result);
         const state = c.kuzu_connection_query(&self.conn, c_query, &result);
         if (result._query_result == null) {
             if (state != c.KuzuSuccess) {
-                self.setLastErrorMessageCopy("kuzu_connection_query failed");
+                self.setError(.query, "kuzu_connection_query failed");
             } else {
-                self.setLastErrorMessageCopy("kuzu_connection_query returned no result");
+                self.setError(.query, "kuzu_connection_query returned no result");
             }
             return Error.QueryFailed;
         }
@@ -98,19 +135,19 @@ pub const Conn = struct {
         var q = QueryResult.init(result, self.allocator);
         if (!q.isSuccess()) {
             const msg_opt = q.getErrorMessage() catch null;
-            self.setLastErrorMessage(msg_opt);
-            q.deinit();
-            if (msg_opt) |msg| {
-                if (msg.len > 0) {
-                    std.debug.print("Kuzu query failed: {s}\n", .{msg});
-                }
+            if (msg_opt) |owned| {
+                self.setError(.query, owned);
+                self.allocator.free(owned);
+            } else {
+                self.setError(.query, "");
             }
+            q.deinit();
             return Error.QueryFailed;
         }
 
         if (state != c.KuzuSuccess) {
             q.deinit();
-            self.setLastErrorMessageCopy("kuzu_connection_query failed");
+            self.setError(.query, "kuzu_connection_query failed");
             return Error.QueryFailed;
         }
 
@@ -128,7 +165,7 @@ pub const Conn = struct {
         const c_query = try toCString(self.allocator, query_str);
         defer self.allocator.free(c_query);
 
-        self.setLastErrorMessage(null);
+        self.clearError();
 
         var stmt: c.kuzu_prepared_statement = std.mem.zeroes(c.kuzu_prepared_statement);
         const state = c.kuzu_connection_prepare(&self.conn, c_query, &stmt);
@@ -137,9 +174,9 @@ pub const Conn = struct {
                 c.kuzu_prepared_statement_destroy(&stmt);
             }
             if (state != c.KuzuSuccess) {
-                self.setLastErrorMessageCopy("kuzu_connection_prepare failed");
+                self.setError(.prepare, "kuzu_connection_prepare failed");
             } else {
-                self.setLastErrorMessageCopy("kuzu_connection_prepare returned no statement");
+                self.setError(.prepare, "kuzu_connection_prepare returned no statement");
             }
             return Error.PrepareFailed;
         }
@@ -149,17 +186,12 @@ pub const Conn = struct {
             if (err_msg_ptr != null) {
                 const msg_slice = std.mem.span(err_msg_ptr);
                 if (msg_slice.len > 0) {
-                    const msg_copy = self.allocator.dupe(u8, msg_slice) catch {
-                        c.kuzu_destroy_string(err_msg_ptr);
-                        c.kuzu_prepared_statement_destroy(&stmt);
-                        return Error.PrepareFailed;
-                    };
-                    c.kuzu_destroy_string(err_msg_ptr);
-                    self.setLastErrorMessage(msg_copy);
+                    // Set structured error then continue
+                    self.setError(.prepare, msg_slice);
                 } else {
-                    c.kuzu_destroy_string(err_msg_ptr);
-                    self.setLastErrorMessage(null);
+                    self.setError(.prepare, "");
                 }
+                if (err_msg_ptr != null) c.kuzu_destroy_string(err_msg_ptr);
             }
             c.kuzu_prepared_statement_destroy(&stmt);
             return Error.PrepareFailed;
@@ -188,11 +220,13 @@ pub const Conn = struct {
     }
 
     pub fn setMaxThreads(self: *Conn, num_threads: u64) !void {
+        self.clearError();
         const state = c.kuzu_connection_set_max_num_thread_for_exec(&self.conn, num_threads);
         try checkStateWith(state, self.makeStateHandler("kuzu_connection_set_max_num_thread_for_exec failed", Error.InvalidArgument));
     }
 
     pub fn getMaxThreads(self: *Conn) !u64 {
+        self.clearError();
         var num_threads: u64 = undefined;
         const state = c.kuzu_connection_get_max_num_thread_for_exec(&self.conn, &num_threads);
         try checkStateWith(state, self.makeStateHandler("kuzu_connection_get_max_num_thread_for_exec failed", Error.InvalidArgument));
@@ -204,6 +238,7 @@ pub const Conn = struct {
     }
 
     pub fn setTimeout(self: *Conn, timeout_ms: u64) !void {
+        self.clearError();
         const state = c.kuzu_connection_set_query_timeout(&self.conn, timeout_ms);
         try checkStateWith(state, self.makeStateHandler("kuzu_connection_set_query_timeout failed", Error.InvalidArgument));
     }

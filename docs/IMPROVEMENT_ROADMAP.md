@@ -81,23 +81,23 @@ This is pragmatic: we won’t fabricate PG/SQLite codes. If Kuzu later adds rich
 
 ### Implementation Checklist
 
-- [ ] **src/errors.zig**
+- [x] **src/errors.zig**
   - Add `pub const KuzuError` with fields and `init`, `categorize`, `deinit` helpers.
   - Keep the `Error` error set minimal for flow control (e.g., `QueryFailed`, `PrepareFailed`, `ExecuteFailed`, `InvalidArgument`, `Unknown`).
 
-- [ ] **src/conn.zig**
+- [x] **src/conn.zig**
   - Add `err: ?KuzuError` and `_err_data: ?[]u8`.
   - Implement `setError`, `clearError`, and `lastError()`; ensure error is populated on all failure paths.
 
-- [ ] **src/query_result.zig**
+- [x] **src/query_result.zig**
   - On failed result, set `Conn.err` with `op = .query` and propagate.
   - Ensure any borrowed error strings are duplicated before free.
 
-- [ ] **src/prepared_statement.zig**
+- [x] **src/prepared_statement.zig**
   - For bind/execute failures, build `KuzuError` from fetched messages and store on `Conn`.
 
 ### Testing
-- [ ] **src/tests/errors.zig**
+- [x] **src/tests/errors.zig**
   - Simulate failures in `query`, `prepare`, `execute`, and config methods; assert `Conn.err` has correct `op` and a reasonable `category`.
   - Verify error message preservation and ownership (no leaks, no UAF).
   - Confirm `clearError()` resets state; `lastErrorMessage()` remains backward compatible.

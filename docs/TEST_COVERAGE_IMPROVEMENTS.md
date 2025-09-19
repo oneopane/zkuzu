@@ -83,6 +83,7 @@ Missing tests for most data type bind/retrieval functions:
 - Timeout scenarios
 - Interrupt handling
 - Memory allocation failures
+ - KuzuError propagation and Conn.err lifecycle
 
 ### 6. **Database Configuration**
 - SystemConfig usage in database initialization
@@ -119,6 +120,24 @@ test "connection error recovery" {
     // Connection interruption
     // Timeout handling
     // Pool exhaustion recovery
+}
+
+test "kuzu error propagation and categorization" {
+    // After a failing query/prepare/execute/config call:
+    // - conn.lastError() returns a non-null KuzuError*
+    // - err.op matches the operation (query/prepare/execute/bind/config)
+    // - err.category is reasonable (argument/timeout/interrupt/unknown)
+    // - lastErrorMessage() matches err.message
+    // - clearError() resets both lastErrorMessage and lastError()
+}
+
+test "prepared statement bind error sets conn.err" {
+    // Bind a wrong type or unknown parameter name
+    // Verify err.op == .bind and err.message contains bind failure details
+}
+
+test "config error captured" {
+    // setMaxThreads/setTimeout with invalid values should set err.op == .config
 }
 ```
 
@@ -167,6 +186,7 @@ test "database configuration" {
    - `src/tests/error_handling_test.zig`
    - `src/tests/concurrent_test.zig`
    - `src/tests/configuration_test.zig`
+   - `src/tests/errors_test.zig` (focused on `KuzuError` and `Conn.err` lifecycle)
 
 2. **Add property-based testing** for data types:
    - Generate random values of each type
@@ -187,6 +207,7 @@ test "database configuration" {
    - Integrate Zig's built-in coverage tools
    - Set coverage target (aim for >80%)
    - Add coverage reporting to CI
+   - Track allocations/frees for `KuzuError` to prevent leaks
 
 ## Quick Wins
 
@@ -197,6 +218,7 @@ These tests can be added immediately with minimal effort:
 3. **Column metadata test** - Quick test for getColumnCount/Name
 4. **Null value handling** - Test isNull across different types
 5. **Pool statistics validation** - Verify getStats accuracy
+6. **Conn.err basic check** - Trigger an invalid query and assert `lastError()` is non-null with `op = .query`
 
 ## Estimated Effort
 
