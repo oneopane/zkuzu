@@ -85,7 +85,6 @@ test "prepared statements, name getters, exec and transactions" {
     try ps.bindInt("min_age", 30);
     std.debug.print("ps-test: execute...\n", .{});
     var qr = try ps.execute();
-    defer qr.deinit();
 
     var seen: usize = 0;
     while (try qr.next()) |row_val| {
@@ -99,6 +98,7 @@ test "prepared statements, name getters, exec and transactions" {
     }
 
     try testing.expectEqual(@as(usize, 1), seen);
+    qr.deinit();
 
     std.debug.print("ps-test: execute with null min_age...\n", .{});
     try connection_handle.exec("MERGE (:Member {name:'Cara', age: 28})");
@@ -106,10 +106,11 @@ test "prepared statements, name getters, exec and transactions" {
     defer ps_null.deinit();
     try ps_null.bindNull("min", zkuzu.c.KUZU_INT64);
     var qr_null = try ps_null.execute();
-    defer qr_null.deinit();
     const row_opt = try qr_null.next();
     try testing.expectEqual(@as(?*zkuzu.Row, null), row_opt);
 
+    // Close result before starting a transaction
+    qr_null.deinit();
     try connection_handle.beginTransaction();
     try connection_handle.exec("MERGE (:Member {name:'Dax', age: 41})");
     try connection_handle.rollback();
@@ -156,12 +157,10 @@ test "composite value and graph accessors" {
     );
 
     var qr = try conn.query("MATCH (a:Person {name:'Alice'})-[r:Knows]->(b:Person)\n" ++ "RETURN range(1,3) AS ints, collect(b.name) AS friends, a AS node, r AS rel\n" ++ "LIMIT 1");
-    defer qr.deinit();
 
     const row_opt = try qr.next();
     try testing.expect(row_opt != null);
     var row = row_opt.?;
-    defer row.deinit();
 
     // List of ints
     var ints_val = try row.getValue(0);
@@ -260,6 +259,11 @@ test "composite value and graph accessors" {
     try testing.expect(rel_prop_count >= 1);
     const rel_prop_name_copy = try rel_view.copyPropertyName(allocator, 0);
     defer allocator.free(rel_prop_name_copy);
+
+    // Ensure row is closed before dropping the result
+    row.deinit();
+    // Close first result before issuing a new query under guard semantics
+    qr.deinit();
 
     // Recursive relationship (path) helpers
     var path_qr = try conn.query("MATCH p = (:Person {name:'Alice'})-[:Knows*1..2]->(:Person)\n" ++ "RETURN p\n" ++ "LIMIT 1");

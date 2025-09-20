@@ -253,9 +253,17 @@ pub fn PreparedStatementType(comptime ConnType: type) type {
         // Execute prepared statement
         pub fn execute(self: *@This()) !QueryResult {
             self.conn.clearError();
-            const prev = try self.conn.beginOp();
-            var ok: bool = false;
-            defer self.conn.endOp(prev, ok, null);
+            // Attempt recovery outside the lock if previously failed
+            if (self.conn.failed) {
+                _ = self.conn.recover() catch {};
+            }
+            // Guarded execution under the connection mutex
+            self.conn.mutex.lock();
+            defer self.conn.mutex.unlock();
+            if (self.conn.in_result) {
+                self.conn.setError(.execute, "connection busy: active result in progress");
+                return Error.Busy;
+            }
 
             var result: c.kuzu_query_result = std.mem.zeroes(c.kuzu_query_result);
             const state = c.kuzu_connection_execute(&self.conn.conn, &self.stmt, &result);
@@ -278,16 +286,32 @@ pub fn PreparedStatementType(comptime ConnType: type) type {
                     self.conn.setError(.execute, "");
                 }
                 q.deinit();
+                self.conn.failed = true;
+                self.conn.stats.failed_operations += 1;
+                self.conn.stats.last_error_ts = std.time.timestamp();
                 return Error.ExecuteFailed;
             }
 
             if (state != c.KuzuSuccess) {
                 q.deinit();
                 self.conn.setError(.execute, "kuzu_connection_execute failed");
+                self.conn.failed = true;
+                self.conn.stats.failed_operations += 1;
+                self.conn.stats.last_error_ts = std.time.timestamp();
                 return Error.ExecuteFailed;
             }
 
-            ok = true;
+            // Mark connection busy until the result is closed
+            q.on_close_ctx = @intFromPtr(self.conn);
+            q.on_close_fn = struct {
+                fn onClose(addr: usize) void {
+                    const cptr = @as(*ConnType, @ptrFromInt(addr));
+                    cptr.mutex.lock();
+                    cptr.in_result = false;
+                    cptr.mutex.unlock();
+                }
+            }.onClose;
+            self.conn.in_result = true;
             self.conn.stats.total_executes += 1;
             return q;
         }

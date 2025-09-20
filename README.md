@@ -257,6 +257,10 @@ This high-level reference mirrors inline doc comments. See the source for full d
 - Transaction state errors
   - `beginTransaction()` only valid when idle; `commit/rollback()` only when in a transaction
   - Prefer `Pool.withTransaction` or the safety pattern with `need_rollback`
+- error.Busy from overlapping usage
+  - The connection forbids overlapping operations while a `QueryResult` is alive.
+  - Always `qr.deinit()` before issuing another `query/prepare/execute/beginTransaction` on the same connection.
+  - `exec()` is safe because it immediately deinitializes the internal result.
 - Interrupted or timeout
   - Use `Conn.setTimeout(ms)` before running a query; call `Conn.interrupt()` from another thread to cancel
 

@@ -11,7 +11,6 @@ pub const c = bindings.c;
 pub const Database = database.Database;
 pub const SystemConfig = database.SystemConfig;
 pub const Conn = connection.Conn;
-pub const ConnState = connection.Conn.State;
 pub const ConnStats = connection.Conn.Stats;
 pub const PreparedStatement = connection.PreparedStatement;
 pub const QueryResult = query_result.QueryResult;

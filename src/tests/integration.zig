@@ -17,8 +17,8 @@ fn countPersons(conn: *zkuzu.Conn) !u64 {
     defer qr.deinit();
     if (try qr.next()) |row| {
         defer row.deinit();
-        const c = try row.get(u64, 0);
-        return c;
+        const c = try row.get(i64, 0);
+        return @intCast(c);
     }
     return 0;
 }
@@ -38,7 +38,6 @@ test "integration: end-to-end workflow with pool and prepared statements" {
 
     // Verify simple query
     var qr = try fx.conn.query("MATCH (p:Person) RETURN p.name ORDER BY p.name");
-    defer qr.deinit();
     var seen: usize = 0;
     while (try qr.next()) |row| {
         defer row.deinit();
@@ -46,6 +45,7 @@ test "integration: end-to-end workflow with pool and prepared statements" {
         seen += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), seen);
+    qr.deinit();
 
     // Use pool to run concurrent writes
     var pool = try zkuzu.Pool.init(a, &fx.db, 4);
@@ -116,7 +116,7 @@ test "integration: large dataset and timing" {
     defer qr.deinit();
     if (try qr.next()) |row| {
         defer row.deinit();
-        _ = try row.get(u64, 0);
+        _ = try row.get(i64, 0);
     }
     std.debug.print("count query: {} ms\n", .{t_q.elapsedMs()});
 }

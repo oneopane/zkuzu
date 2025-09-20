@@ -5,7 +5,7 @@ This document outlines the improvements needed to bring zkuzu up to the maturity
 Status summary (current code review):
 - Priority 1 (Memory Management) – implemented in zkuzu.
 - Priority 2 (Enhanced Error Handling) – implemented in zkuzu with `KuzuError`, connection `err`, and tests.
-- Priority 3 (Connection State) – plan to migrate to a lightweight guard; current code uses a robust state machine with recovery.
+- Priority 3 (Connection State) – implemented: lightweight guards replace enum state; overlapping queries are forbidden; transaction flag tracks active TX; recovery simplified and test‑covered.
 - Priority 4 (Type-Safe Accessors) – implemented via `Row.get(T, idx|name)` and helpers.
 - Priority 5 (Comprehensive Testing) – largely implemented; several targeted scenarios remain.
 - Priorities 6–8 – next areas of focus.

@@ -11,20 +11,29 @@ test "tx: nested begin fails and recovery works" {
     try fx.conn.exec("CREATE NODE TABLE IF NOT EXISTS Item(id INT64, PRIMARY KEY(id))");
 
     try fx.conn.beginTransaction();
-    // nested begin should fail and mark failed
-    const nested = fx.conn.beginTransaction();
-    try std.testing.expectError(zkuzu.Error.TransactionFailed, nested);
-    try std.testing.expectEqual(zkuzu.ConnState.failed, fx.conn.getState());
+    // nested begin should fail
+    try std.testing.expectError(zkuzu.Error.TransactionFailed, fx.conn.beginTransaction());
 
     // Recover and ensure usable
     try fx.conn.recover();
-    try std.testing.expectEqual(zkuzu.ConnState.idle, fx.conn.getState());
     var qr = try fx.conn.query("RETURN 2");
     defer qr.deinit();
     if (try qr.next()) |row| {
         defer row.deinit();
         try std.testing.expectEqual(@as(i64, 2), try row.get(i64, 0));
     }
+}
+
+test "tx: begin disallowed while a result is active" {
+    const a = std.testing.allocator;
+    var fx = try tutil.DbFixture.init(a, "zig-cache/zkuzu-tx-begin-guard", "db");
+    defer fx.deinit();
+
+    var qr = try fx.conn.query("RETURN 1");
+    try std.testing.expectError(zkuzu.Error.TransactionFailed, fx.conn.beginTransaction());
+    qr.deinit();
+    try fx.conn.beginTransaction();
+    try fx.conn.rollback();
 }
 
 test "tx: rollback discards changes" {

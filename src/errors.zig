@@ -137,6 +137,7 @@ pub const Error = error{
     ConnectionInit,
     InvalidDatabase,
     InvalidConnection,
+    Busy,
     QueryFailed,
     PrepareFailed,
     BindFailed,

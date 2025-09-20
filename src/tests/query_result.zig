@@ -122,3 +122,24 @@ test "type-safe getters: scalars, nullables, lists, and mismatches" {
 
     row.deinit();
 }
+
+test "result guard clears on deinit" {
+    const a = std.testing.allocator;
+    _ = try std.fs.cwd().makeOpenPath("zig-cache/zkuzu-qr-guard", .{});
+    const db_path = try zkuzu.toCString(a, "zig-cache/zkuzu-qr-guard/db");
+    defer a.free(db_path);
+
+    var db = try zkuzu.open(db_path, null);
+    defer db.deinit();
+    var conn = try db.connection();
+    defer conn.deinit();
+
+    var qr = try conn.query("RETURN 1");
+    // Overlapping query should fail while result is active
+    try std.testing.expectError(zkuzu.Error.Busy, conn.query("RETURN 2"));
+    qr.deinit();
+
+    // After deinit, queries should work again
+    var ok = try conn.query("RETURN 3");
+    ok.deinit();
+}

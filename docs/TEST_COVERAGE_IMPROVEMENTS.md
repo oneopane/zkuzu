@@ -76,10 +76,10 @@ This document summarizes current coverage and lists targeted additions to reach 
   - OOB column index access → `Error.TypeMismatch`/`InvalidColumn` where applicable.
   - Int conversion overflow paths across more widths (u16/u32/u64, i16/i32/i64).
 
-- [ ] Connection State Refactor (if/when implemented)
-  - Replace strong assertions on `ConnState` enum with guard-based checks (busy result, `transaction_active`).
-  - Add a test that forbids overlapping queries while a `QueryResult` is active.
-  - Ensure `edge: connection failure and recovery` passes without crashing after connection validation changes.
+- [x] Connection State Refactor (completed)
+  - Replaced enum assertions with behavior checks (busy result, TX guard).
+  - Added overlapping query guard test and TX-while-busy test.
+  - Validated recovery paths; `edge: connection failure and recovery` passes.
 
 ## Recommended Test Additions (sketches)
 

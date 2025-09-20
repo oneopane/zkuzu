@@ -15,6 +15,10 @@ pub const QueryResult = struct {
     current_row: ?*Row = null,
     name_to_index: ?std.StringHashMapUnmanaged(u64) = null,
     _arena: *ArenaAllocator,
+    // Optional callback invoked when this result is deinitialized.
+    // Used by the owning connection to clear busy guards.
+    on_close_ctx: usize = 0,
+    on_close_fn: ?*const fn (ctx: usize) void = null,
 
     /// Initialize a `QueryResult` wrapper around a Kuzu `kuzu_query_result`.
     ///
@@ -48,6 +52,13 @@ pub const QueryResult = struct {
             self.name_to_index = null;
         }
         c.kuzu_query_result_destroy(&self.result);
+        // Notify owner (if any) after the C handle is destroyed
+        if (self.on_close_fn) |f| {
+            f(self.on_close_ctx);
+            // Ensure we only notify once
+            self.on_close_fn = null;
+            self.on_close_ctx = 0;
+        }
         // Release arena last so any borrowed strings remain valid until now
         const arena = self._arena;
         arena.deinit();

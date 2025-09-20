@@ -14,13 +14,6 @@ const QueryResult = query_result.QueryResult;
 const KuzuError = errors.KuzuError;
 
 pub const Conn = struct {
-    pub const State = enum {
-        idle,
-        in_transaction,
-        in_query,
-        failed,
-    };
-
     pub const Stats = struct {
         created_ts: i64 = 0,
         last_used_ts: i64 = 0,
@@ -44,7 +37,10 @@ pub const Conn = struct {
     err: ?KuzuError = null,
     _err_data: ?[]u8 = null,
     db_handle: *c.kuzu_database,
-    state: State = .idle,
+    // Lightweight guards instead of a complex state machine
+    in_result: bool = false,
+    transaction_active: bool = false,
+    failed: bool = false,
     mutex: std.Thread.Mutex = .{},
     stats: Stats = .{},
 
@@ -73,7 +69,9 @@ pub const Conn = struct {
             .err = null,
             ._err_data = null,
             .db_handle = db_handle,
-            .state = .idle,
+            .in_result = false,
+            .transaction_active = false,
+            .failed = false,
             .mutex = .{},
             .stats = .{ .created_ts = std.time.timestamp() },
         };
@@ -164,12 +162,7 @@ pub const Conn = struct {
         return null;
     }
 
-    /// Get the current connection state.
-    ///
-    /// Returns: One of `.idle`, `.in_transaction`, `.in_query`, `.failed`
-    pub fn getState(self: *Conn) State {
-        return self.state;
-    }
+    // Explicit Conn.State API has been removed; prefer guard behavior checks.
 
     /// Get accumulated connection statistics.
     ///
@@ -216,57 +209,9 @@ pub const Conn = struct {
     }
 
     fn setFailedLocked(self: *Conn) void {
-        self.state = .failed;
+        self.failed = true;
         self.stats.failed_operations += 1;
         self.stats.last_error_ts = std.time.timestamp();
-    }
-
-    /// Internal: Begin a connection operation with state and mutex handling.
-    ///
-    /// Returns: Previous state on success (used to restore in `endOp`).
-    ///
-    /// Errors:
-    /// - `Error.InvalidConnection`: If connection is not usable
-    /// - `Error.InvalidConnection`: If already in a conflicting state
-    pub fn beginOp(self: *Conn) errors.Error!State {
-        self.mutex.lock();
-        // Automatic recovery path if failed
-        if (self.state == .failed) {
-            if (self.recoverLocked()) |_| {
-                // success
-            } else |err| {
-                self.mutex.unlock();
-                return err;
-            }
-        }
-        // Only allow operations in idle or in_transaction
-        switch (self.state) {
-            .idle, .in_transaction => {},
-            .in_query => {
-                self.mutex.unlock();
-                return errors.Error.InvalidConnection;
-            },
-            .failed => unreachable, // recovered above or returned
-        }
-        const prev = self.state;
-        self.state = .in_query;
-        self.stats.last_used_ts = std.time.timestamp();
-        return prev;
-    }
-
-    /// Internal: End a connection operation and restore/advance state.
-    ///
-    /// Parameters:
-    /// - `restore_state`: State to restore on failure or if `new_state_on_success` is null
-    /// - `success`: Whether the operation succeeded
-    /// - `new_state_on_success`: Optional state to set on success
-    pub fn endOp(self: *Conn, restore_state: State, success: bool, new_state_on_success: ?State) void {
-        if (success) {
-            self.state = new_state_on_success orelse restore_state;
-        } else {
-            self.setFailedLocked();
-        }
-        self.mutex.unlock();
     }
 
     fn recoverLocked(self: *Conn) !void {
@@ -288,7 +233,7 @@ pub const Conn = struct {
                     self.allocator.free(q);
                 }
                 self.clearError();
-                self.state = .idle;
+                self.failed = false;
                 self.stats.last_reset_ts = std.time.timestamp();
                 return;
             }
@@ -299,14 +244,14 @@ pub const Conn = struct {
         const st = c.kuzu_connection_init(self.db_handle, &new_handle);
         // If reinit fails, keep existing handle and failed state
         if (st != c.KuzuSuccess) {
-            self.state = .failed;
+            self.failed = true;
             return errors.Error.InvalidConnection;
         }
         // Replace old handle
         c.kuzu_connection_destroy(&self.conn);
         self.conn = new_handle;
         self.clearError();
-        self.state = .idle;
+        self.failed = false;
         self.stats.reconnects += 1;
         self.stats.last_reset_ts = std.time.timestamp();
     }
@@ -345,9 +290,16 @@ pub const Conn = struct {
 
         self.clearError();
 
-        const prev = try self.beginOp();
-        var ok: bool = false;
-        defer self.endOp(prev, ok, null);
+        // Guarded execution under mutex
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.failed) {
+            try self.recoverLocked();
+        }
+        if (self.in_result) {
+            self.setError(.query, "connection busy: active result in progress");
+            return Error.Busy;
+        }
 
         var result: c.kuzu_query_result = std.mem.zeroes(c.kuzu_query_result);
         const state = c.kuzu_connection_query(&self.conn, c_query, &result);
@@ -357,6 +309,7 @@ pub const Conn = struct {
             } else {
                 self.setError(.query, "kuzu_connection_query returned no result");
             }
+            self.setFailedLocked();
             return Error.QueryFailed;
         }
 
@@ -370,16 +323,20 @@ pub const Conn = struct {
                 self.setError(.query, "");
             }
             q.deinit();
+            self.setFailedLocked();
             return Error.QueryFailed;
         }
 
         if (state != c.KuzuSuccess) {
             q.deinit();
             self.setError(.query, "kuzu_connection_query failed");
+            self.setFailedLocked();
             return Error.QueryFailed;
         }
-
-        ok = true;
+        // Mark connection as busy with a live result; install a close callback
+        q.on_close_ctx = @intFromPtr(self);
+        q.on_close_fn = qrClosed;
+        self.in_result = true;
         self.stats.total_queries += 1;
         return q;
     }
@@ -424,9 +381,15 @@ pub const Conn = struct {
 
         self.clearError();
 
-        const prev = try self.beginOp();
-        var ok: bool = false;
-        defer self.endOp(prev, ok, null);
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.failed) {
+            try self.recoverLocked();
+        }
+        if (self.in_result) {
+            self.setError(.prepare, "connection busy: active result in progress");
+            return Error.Busy;
+        }
 
         var stmt: c.kuzu_prepared_statement = std.mem.zeroes(c.kuzu_prepared_statement);
         const state = c.kuzu_connection_prepare(&self.conn, c_query, &stmt);
@@ -439,6 +402,7 @@ pub const Conn = struct {
             } else {
                 self.setError(.prepare, "kuzu_connection_prepare returned no statement");
             }
+            self.setFailedLocked();
             return Error.PrepareFailed;
         }
 
@@ -455,10 +419,9 @@ pub const Conn = struct {
                 if (err_msg_ptr != null) c.kuzu_destroy_string(err_msg_ptr);
             }
             c.kuzu_prepared_statement_destroy(&stmt);
+            self.setFailedLocked();
             return Error.PrepareFailed;
         }
-
-        ok = true;
         self.stats.total_prepares += 1;
         return Ps{
             .stmt = stmt,
@@ -480,20 +443,17 @@ pub const Conn = struct {
     /// try conn.commit();
     /// ```
     pub fn beginTransaction(self: *Conn) !void {
-        self.clearError();
-        const prev = try self.beginOp();
-        // Only allowed when not already in a transaction
-        if (prev != .idle) {
-            std.debug.print("beginTransaction: state not idle (prev={s})\n", .{@tagName(prev)});
-            // Mark the connection as failed to signal misuse clearly
-            self.setFailedLocked();
-            self.mutex.unlock();
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        // Disallow begin when already in a transaction or a live result exists
+        if (self.transaction_active or self.in_result) {
             self.setError(.transaction, "beginTransaction called while not idle");
+            self.setFailedLocked();
             return Error.TransactionFailed;
         }
-
-        var ok: bool = false;
-        defer self.endOp(prev, ok, .in_transaction);
+        if (self.failed) {
+            try self.recoverLocked();
+        }
 
         const c_query = try toCString(self.allocator, "BEGIN TRANSACTION");
         defer self.allocator.free(c_query);
@@ -501,10 +461,6 @@ pub const Conn = struct {
         var result: c.kuzu_query_result = std.mem.zeroes(c.kuzu_query_result);
         const state = c.kuzu_connection_query(&self.conn, c_query, &result);
         if (state != c.KuzuSuccess or result._query_result == null) {
-            std.debug.print(
-                "beginTransaction: kuzu_connection_query failed state={} result_ptr={any}\n",
-                .{ state, result._query_result },
-            );
             if (result._query_result != null) {
                 var qtmp = QueryResult.init(result, self.allocator);
                 const msg_opt = qtmp.getErrorMessage() catch null;
@@ -518,13 +474,13 @@ pub const Conn = struct {
             } else {
                 self.setError(.transaction, "BEGIN TRANSACTION failed");
             }
+            self.setFailedLocked();
             return Error.TransactionFailed;
         }
 
         var q = QueryResult.init(result, self.allocator);
         defer q.deinit();
         if (!q.isSuccess()) {
-            std.debug.print("beginTransaction: QueryResult not success\n", .{});
             const msg_opt = q.getErrorMessage() catch null;
             if (msg_opt) |owned| {
                 self.setError(.transaction, owned);
@@ -532,9 +488,10 @@ pub const Conn = struct {
             } else {
                 self.setError(.transaction, "");
             }
+            self.setFailedLocked();
             return Error.TransactionFailed;
         }
-        ok = true;
+        self.transaction_active = true;
         self.stats.tx_begun += 1;
     }
 
@@ -543,16 +500,17 @@ pub const Conn = struct {
     /// Errors:
     /// - `Error.TransactionFailed`: If not in a transaction or commit fails
     pub fn commit(self: *Conn) !void {
-        self.clearError();
-        const prev = try self.beginOp();
-        if (prev != .in_transaction) {
-            self.endOp(prev, false, null);
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        // Disallow commit when not active
+        if (!self.transaction_active) {
             self.setError(.transaction, "commit called while not in transaction");
+            self.setFailedLocked();
             return Error.TransactionFailed;
         }
-
-        var ok: bool = false;
-        defer self.endOp(prev, ok, .idle);
+        if (self.failed) {
+            try self.recoverLocked();
+        }
 
         const c_query = try toCString(self.allocator, "COMMIT");
         defer self.allocator.free(c_query);
@@ -561,6 +519,7 @@ pub const Conn = struct {
         if (state != c.KuzuSuccess or result._query_result == null) {
             if (result._query_result != null) c.kuzu_query_result_destroy(&result);
             self.setError(.transaction, "COMMIT failed");
+            self.setFailedLocked();
             return Error.TransactionFailed;
         }
         var q = QueryResult.init(result, self.allocator);
@@ -573,9 +532,10 @@ pub const Conn = struct {
             } else {
                 self.setError(.transaction, "");
             }
+            self.setFailedLocked();
             return Error.TransactionFailed;
         }
-        ok = true;
+        self.transaction_active = false;
         self.stats.tx_committed += 1;
     }
 
@@ -584,16 +544,17 @@ pub const Conn = struct {
     /// Errors:
     /// - `Error.TransactionFailed`: If not in a transaction or rollback fails
     pub fn rollback(self: *Conn) !void {
-        self.clearError();
-        const prev = try self.beginOp();
-        if (prev != .in_transaction) {
-            self.endOp(prev, false, null);
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        // Disallow rollback when not active
+        if (!self.transaction_active) {
             self.setError(.transaction, "rollback called while not in transaction");
+            self.setFailedLocked();
             return Error.TransactionFailed;
         }
-
-        var ok: bool = false;
-        defer self.endOp(prev, ok, .idle);
+        if (self.failed) {
+            try self.recoverLocked();
+        }
 
         const c_query = try toCString(self.allocator, "ROLLBACK");
         defer self.allocator.free(c_query);
@@ -602,6 +563,7 @@ pub const Conn = struct {
         if (state != c.KuzuSuccess or result._query_result == null) {
             if (result._query_result != null) c.kuzu_query_result_destroy(&result);
             self.setError(.transaction, "ROLLBACK failed");
+            self.setFailedLocked();
             return Error.TransactionFailed;
         }
         var q = QueryResult.init(result, self.allocator);
@@ -614,9 +576,10 @@ pub const Conn = struct {
             } else {
                 self.setError(.transaction, "");
             }
+            self.setFailedLocked();
             return Error.TransactionFailed;
         }
-        ok = true;
+        self.transaction_active = false;
         self.stats.tx_rolled_back += 1;
     }
 
@@ -631,12 +594,10 @@ pub const Conn = struct {
     /// - `Error.InvalidArgument`: If Kuzu rejects the value
     pub fn setMaxThreads(self: *Conn, num_threads: u64) !void {
         self.clearError();
-        const prev = try self.beginOp();
-        var ok: bool = false;
-        defer self.endOp(prev, ok, null);
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const state = c.kuzu_connection_set_max_num_thread_for_exec(&self.conn, num_threads);
         try checkStateWith(state, self.makeStateHandler("kuzu_connection_set_max_num_thread_for_exec failed", Error.InvalidArgument));
-        ok = true;
     }
 
     /// Get current maximum worker threads value for execution.
@@ -647,13 +608,11 @@ pub const Conn = struct {
     /// - `Error.InvalidArgument`: If the query fails
     pub fn getMaxThreads(self: *Conn) !u64 {
         self.clearError();
-        const prev = try self.beginOp();
-        var ok: bool = false;
-        defer self.endOp(prev, ok, null);
+        self.mutex.lock();
+        defer self.mutex.unlock();
         var num_threads: u64 = undefined;
         const state = c.kuzu_connection_get_max_num_thread_for_exec(&self.conn, &num_threads);
         try checkStateWith(state, self.makeStateHandler("kuzu_connection_get_max_num_thread_for_exec failed", Error.InvalidArgument));
-        ok = true;
         return num_threads;
     }
 
@@ -671,12 +630,10 @@ pub const Conn = struct {
     /// - `Error.InvalidArgument`: If Kuzu rejects the timeout
     pub fn setTimeout(self: *Conn, timeout_ms: u64) !void {
         self.clearError();
-        const prev = try self.beginOp();
-        var ok: bool = false;
-        defer self.endOp(prev, ok, null);
+        self.mutex.lock();
+        defer self.mutex.unlock();
         const state = c.kuzu_connection_set_query_timeout(&self.conn, timeout_ms);
         try checkStateWith(state, self.makeStateHandler("kuzu_connection_set_query_timeout failed", Error.InvalidArgument));
-        ok = true;
     }
 
     // Health check / validation
@@ -700,7 +657,7 @@ pub const Conn = struct {
     /// - `Error.InvalidConnection`: If recovery fails or not usable
     pub fn validate(self: *Conn) !void {
         self.mutex.lock();
-        if (self.state == .failed) {
+        if (self.failed) {
             // try to recover in-place
             const rec = self.recoverLocked();
             if (rec) |_| {
@@ -720,6 +677,14 @@ pub const Conn = struct {
             return err;
         };
         self.stats.validations += 1;
+    }
+
+    // Result close callback to clear busy flag when a QueryResult is dropped.
+    fn qrClosed(addr: usize) void {
+        const self = @as(*Conn, @ptrFromInt(addr));
+        self.mutex.lock();
+        self.in_result = false;
+        self.mutex.unlock();
     }
 };
 

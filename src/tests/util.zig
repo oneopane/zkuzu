@@ -20,6 +20,14 @@ pub const DbFixture = struct {
     z_path: [:0]u8,
 
     pub fn init(a: std.mem.Allocator, dir: []const u8, name: []const u8) !DbFixture {
+        if (std.fs.cwd().access(dir, .{})) {
+            std.fs.cwd().deleteTree(dir) catch |err| return err;
+        } else |err| {
+            switch (err) {
+                error.FileNotFound => {},
+                else => return err,
+            }
+        }
         _ = try std.fs.cwd().makeOpenPath(dir, .{});
         const full = try std.fmt.allocPrint(a, "{s}/{s}", .{ dir, name });
         defer a.free(full);

@@ -17,7 +17,7 @@ test "connection basics and config" {
     _ = try conn.getMaxThreads();
 }
 
-test "state transitions and recovery" {
+test "guards: overlapping queries and recovery" {
     const a = std.testing.allocator;
     _ = try std.fs.cwd().makeOpenPath("zig-cache/zkuzu-conn-test2", .{});
     const db_path = try zkuzu.toCString(a, "zig-cache/zkuzu-conn-test2/db");
@@ -28,29 +28,21 @@ test "state transitions and recovery" {
     var conn = try db.connection();
     defer conn.deinit();
 
-    try std.testing.expectEqual(zkuzu.ConnState.idle, conn.getState());
-
-    // Begin transaction -> in_transaction
-    try conn.beginTransaction();
-    try std.testing.expectEqual(zkuzu.ConnState.in_transaction, conn.getState());
-
-    // Query within transaction retains transaction state
+    // Overlapping queries are rejected while a result is alive
     var q = try conn.query("RETURN 1");
-    defer q.deinit();
-    try std.testing.expectEqual(zkuzu.ConnState.in_transaction, conn.getState());
+    try std.testing.expectError(zkuzu.Error.Busy, conn.query("RETURN 2"));
 
-    // Commit -> idle
-    try conn.commit();
-    try std.testing.expectEqual(zkuzu.ConnState.idle, conn.getState());
-
-    // Force a failure with an invalid statement
-    try std.testing.expectError(zkuzu.Error.QueryFailed, conn.query("THIS IS NOT VALID CYPHER"));
-    try std.testing.expectEqual(zkuzu.ConnState.failed, conn.getState());
-
-    // Automatic recovery on next operation
+    // After deinit, queries work again
+    q.deinit();
     var q2 = try conn.query("RETURN 2");
-    defer q2.deinit();
-    try std.testing.expectEqual(zkuzu.ConnState.idle, conn.getState());
+    // Close before issuing invalid statement to test error path
+    q2.deinit();
+
+    // Force a failure with an invalid statement and ensure validate repairs
+    try std.testing.expectError(zkuzu.Error.QueryFailed, conn.query("THIS IS NOT VALID CYPHER"));
+    _ = conn.validate() catch {};
+    var q3 = try conn.query("RETURN 3");
+    defer q3.deinit();
 }
 
 const WorkerCtx = struct {
@@ -104,7 +96,7 @@ test "pool validates and handles concurrent usage" {
     for (threads) |th| th.join();
 
     // Allow some errors but expect most operations to succeed and pool to be functional
-    try std.testing.expect(err_count.load(.monotonic) < 8);
+    try std.testing.expectEqual(@as(u32, 0), err_count.load(.monotonic));
 
     const stats = pool.getStats();
     try std.testing.expect(stats.total_connections <= 4);

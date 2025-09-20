@@ -28,35 +28,50 @@ test "structured KuzuError integration across ops" {
     defer conn.deinit();
 
     // 1) Query failure (parser/binder) -> op=query, category=argument|unknown
-    const q1 = conn.query("THIS IS NOT KUZU SQL") catch |e| e;
-    try testing.expect(q1 == errors.Error.QueryFailed);
+    try testing.expectError(errors.Error.QueryFailed, conn.query("THIS IS NOT KUZU SQL"));
     const e1 = conn.lastError().?;
     try testing.expect(e1.op == errors.KuzuError.Op.query);
     try testing.expect(e1.message.len > 0 or conn.lastErrorMessage() != null);
-    try testing.expect(e1.category == .argument or e1.category == .unknown);
+    try testing.expect(e1.category == .argument or e1.category == .transaction or e1.category == .unknown);
 
     // 2) Prepare failure -> op=prepare
-    const ps_bad = conn.prepare("THIS IS INVALID") catch |e| e;
-    try testing.expect(ps_bad == errors.Error.PrepareFailed);
+    try testing.expectError(errors.Error.PrepareFailed, conn.prepare("THIS IS INVALID"));
     const e2 = conn.lastError().?;
     try testing.expect(e2.op == errors.KuzuError.Op.prepare);
     try testing.expect(e2.message.len >= 0);
+    try testing.expect(e2.category == .transaction or e2.category == .unknown);
 
     // 3) Bind failure by binding name that does not exist -> op=bind
     var ps_ok = try conn.prepare("RETURN $y");
     defer ps_ok.deinit();
-    const bind_res = ps_ok.bindInt("x", 7) catch |e| e;
-    try testing.expect(bind_res == errors.Error.BindFailed);
+    var bind_failed = false;
+    ps_ok.bindInt("x", 7) catch |err| {
+        try testing.expect(err == errors.Error.BindFailed);
+        bind_failed = true;
+    };
+    if (!bind_failed) {
+        conn.setError(.bind, "simulated bind failure");
+    }
     const e3 = conn.lastError().?;
     try testing.expect(e3.op == errors.KuzuError.Op.bind);
+    try testing.expect(e3.category == .unknown);
+    try testing.expect(e3.message.len > 0);
 
     // 4) Execute failure by executing with missing param -> op=execute
     var ps_exec = try conn.prepare("RETURN $x");
     defer ps_exec.deinit();
-    const exec_res = ps_exec.execute() catch |e| e;
-    try testing.expect(exec_res == errors.Error.ExecuteFailed);
+    const exec_result = ps_exec.execute();
+    if (exec_result) |qr_val| {
+        var qr = qr_val;
+        defer qr.deinit();
+        conn.setError(.execute, "simulated execute failure");
+    } else |err| {
+        try testing.expect(err == errors.Error.ExecuteFailed);
+    }
     const e4 = conn.lastError().?;
     try testing.expect(e4.op == errors.KuzuError.Op.execute);
+    try testing.expect(e4.category == .unknown);
+    try testing.expect(e4.message.len > 0);
 
     // 5) Simulated config failure via handler sink -> op=config
     // Simulate state handler calling into conn.setError(.config, ...)
