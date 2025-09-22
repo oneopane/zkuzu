@@ -185,7 +185,7 @@ if (invalid_result) |qr_bad| {
 }
 ```
 
-Planned ergonomics:
+Implemented ergonomics:
 - Generic getter `row.get(T, idx|name)` with copy variants for slice-like types.
 
 ### Connection Pooling
@@ -229,11 +229,11 @@ This high-level reference mirrors inline doc comments. See the source for full d
   - `getSummary() !QuerySummary`
 - Row
   - `get(T, idx|name) !T` – generic typed getter with null handling
-  - Convenience: `getBool/getInt/getUInt/getFloat/getString/getBlob/getDate/getTimestamp/getInterval/getUuid/getDecimalString/getInternalId`
+  - Convenience: `getBool/getInt/getUInt/getFloat/getDouble/getString/getBlob/getDate/getTimestamp/getTimestampTz/getInterval/getUuid/getDecimalString/getInternalId`
   - Copy helpers: `copyString/copyBlob/copyUuid/copyDecimalString`
   - `isNull(idx) !bool`
 - Value
-  - Type conversion: `toBool/toInt/toUInt/toFloat/toString/toBlob/toDate/toTimestamp/toInterval/toUuid/toDecimalString/toInternalId`
+  - Type conversion: `toBool/toInt/toUInt/toFloat/toString/toBlob/toDate/toTimestamp/toTimestampTz/toInterval/toUuid/toDecimalString/toInternalId`
   - Collections: `getListLength()/getListElement(i)`; struct: `getStructFieldCount()/getStructFieldName(i)/getStructFieldValue(i)`; map: `getMapSize()/getMapKey(i)/getMapValue(i)`
   - Graph wrappers: `asNode()/asRel()/asRecursiveRel()` with property helpers
 - Pool
@@ -337,6 +337,7 @@ need_rollback = false;
 
 Planned ergonomics:
 - `conn.begin() -> Tx` handle with `commit()/rollback()` and `rollbackOnClose()` pattern.
+Implemented:
 - `pool.withTransaction(fn)` helper to scope transactions with automatic rollback-on-error.
 
 Threading:

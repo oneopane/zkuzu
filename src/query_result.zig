@@ -531,6 +531,11 @@ pub const Row = struct {
         return val.toFloat();
     }
 
+    /// Alias for `getFloat` to mirror common naming.
+    pub fn getDouble(self: *Row, index: u64) !f64 {
+        return self.getFloat(index);
+    }
+
     /// Get an unsigned 64-bit integer at `index`.
     pub fn getUInt(self: *Row, index: u64) !u64 {
         var val = try self.getValue(index);
@@ -611,6 +616,13 @@ pub const Row = struct {
         var val = try self.getValue(index);
         defer val.deinit();
         return try val.toTimestamp();
+    }
+
+    /// Get a `kuzu_timestamp_tz_t` at `index` (timezone-aware timestamp).
+    pub fn getTimestampTz(self: *Row, index: u64) !c.kuzu_timestamp_tz_t {
+        var val = try self.getValue(index);
+        defer val.deinit();
+        return try val.toTimestampTz();
     }
 
     /// Get a `kuzu_interval_t` at `index`.
@@ -913,6 +925,14 @@ pub const Value = struct {
             },
             else => return Error.TypeMismatch,
         }
+        return ts;
+    }
+
+    /// Convert to `kuzu_timestamp_tz_t`.
+    pub fn toTimestampTz(self: *Value) !c.kuzu_timestamp_tz_t {
+        if (self.getType() != .TimestampTz) return Error.TypeMismatch;
+        var ts: c.kuzu_timestamp_tz_t = undefined;
+        try checkState(c.kuzu_value_get_timestamp_tz(&self.value, &ts));
         return ts;
     }
 

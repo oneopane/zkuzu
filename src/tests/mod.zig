@@ -14,4 +14,7 @@ comptime {
     _ = @import("integration.zig");
     _ = @import("edge_cases.zig");
     _ = @import("transactions.zig");
+    _ = @import("constraints.zig");
+    _ = @import("pool_lifecycle.zig");
+    // Note: interrupt/timeout tests are omitted to keep the suite fast and deterministic.
 }

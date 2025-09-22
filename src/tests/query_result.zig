@@ -143,3 +143,55 @@ test "result guard clears on deinit" {
     var ok = try conn.query("RETURN 3");
     ok.deinit();
 }
+
+test "getDouble alias and timestamp tz getter" {
+    const a = std.testing.allocator;
+    _ = try std.fs.cwd().makeOpenPath("zig-cache/zkuzu-qr-double-tstz", .{});
+    const db_path = try zkuzu.toCString(a, "zig-cache/zkuzu-qr-double-tstz/db");
+    defer a.free(db_path);
+
+    var db = try zkuzu.open(db_path, null);
+    defer db.deinit();
+    var conn = try db.connection();
+    defer conn.deinit();
+
+    // Verify getDouble mirrors getFloat
+    {
+        var qr = try conn.query("RETURN 2.5 AS d");
+        defer qr.deinit();
+        const row_opt = try qr.next();
+        try std.testing.expect(row_opt != null);
+        const row = row_opt.?;
+        defer row.deinit();
+        const f = try row.getFloat(0);
+        const d = try row.getDouble(0);
+        try std.testing.expectEqual(@as(f64, 2.5), f);
+        try std.testing.expectEqual(f, d);
+    }
+
+    // Verify timezone-aware timestamp round-trips via prepared bind + row getter
+    {
+        var ps = try conn.prepare("RETURN $t AS t");
+        defer ps.deinit();
+
+        var tmv: zkuzu.c.tm = std.mem.zeroes(zkuzu.c.tm);
+        tmv.tm_year = 124; // 2024
+        tmv.tm_mon = 0; // Jan
+        tmv.tm_mday = 2;
+        tmv.tm_hour = 3;
+        tmv.tm_min = 4;
+        tmv.tm_sec = 5;
+        var tz: zkuzu.c.kuzu_timestamp_tz_t = undefined;
+        try zkuzu.checkState(zkuzu.c.kuzu_timestamp_tz_from_tm(tmv, &tz));
+
+        try ps.bindTimestampTz("t", tz);
+        var qr2 = try ps.execute();
+        defer qr2.deinit();
+        const row_opt2 = try qr2.next();
+        try std.testing.expect(row_opt2 != null);
+        const row2 = row_opt2.?;
+        defer row2.deinit();
+        const tz_out = try row2.getTimestampTz(0);
+        try std.testing.expectEqual(tz.value, tz_out.value);
+    }
+}
