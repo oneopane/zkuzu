@@ -16,5 +16,8 @@ comptime {
     _ = @import("transactions.zig");
     _ = @import("constraints.zig");
     _ = @import("pool_lifecycle.zig");
-    // Note: interrupt/timeout tests are omitted to keep the suite fast and deterministic.
+    // Optional: slow/unstable tests (enable with -Dslow-tests=true)
+    if (@import("build_options").slow_tests) {
+        _ = @import("interrupt_timeout.zig");
+    }
 }

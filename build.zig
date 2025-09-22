@@ -9,6 +9,7 @@ fn pathExists(b: *std.Build, rel: []const u8) bool {
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const slow_tests = b.option(bool, "slow-tests", "Enable slow/unstable tests (interrupt/timeout)") orelse false;
 
     const lib_path = b.path("lib");
     const kuzu_provider = b.option([]const u8, "kuzu-provider", "kuzu provider: prebuilt|system|local|source") orelse "prebuilt";
@@ -95,6 +96,10 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    // Build options accessible from source via @import("build_options")
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "slow_tests", slow_tests);
+    zkuzu.addOptions("build_options", build_options);
     if (resolved_include) |inc| zkuzu.addIncludePath(inc) else zkuzu.addIncludePath(lib_path);
 
     // Test executable

@@ -74,6 +74,13 @@ zig build example-basic
 zig build example-prepared
 ```
 
+Optional slow tests (timeouts/interrupt behavior):
+
+```bash
+# Enable slow/unstable tests (may take ~10s) 
+zig build test -Dslow-tests=true
+```
+
 ## Quickstart: Exec vs Query
 
 ```zig
@@ -241,6 +248,31 @@ This high-level reference mirrors inline doc comments. See the source for full d
   - `acquire() !Conn`, `release(Conn)`
   - `withConnection(T, ctx, func) T`, `withTransaction(T, ctx, func) T`
   - `query(sql) !QueryResult`, `getStats() PoolStats`, `cleanupIdle(seconds) !void`, `healthCheckAll() !void`
+
+## Type Mapping
+
+- Scalars
+  - Bool → `bool`
+  - Int8/16/32/64 → `i8/i16/i32/i64` (use `Row.get(T, ...)` for narrower types; bounds checked)
+  - UInt8/16/32/64 → `u8/u16/u32/u64` (bounds checked; negative to unsigned is a conversion error)
+  - Float/Double → `f32/f64` via `Row.get(f32|f64, ...)` or `Row.getFloat()/getDouble()`
+- Strings/Blobs
+  - String → `[]const u8` (borrowed); copy with `row.copyString(alloc, idx)`
+  - Blob → `[]const u8` (borrowed); copy with `row.copyBlob(alloc, idx)`
+- Temporals
+  - Date → `c.kuzu_date_t`
+  - Timestamp (µs) → `c.kuzu_timestamp_t` (also supports `TimestampNs/Ms/Sec` via conversion)
+  - TimestampTz → `c.kuzu_timestamp_tz_t`
+  - Interval → `c.kuzu_interval_t`
+- Other primitives
+  - Uuid → string form `[]const u8` via `getUuid()/toUuid()`
+  - Decimal → string form `[]const u8` via `getDecimalString()/toDecimalString()`
+  - InternalId → `c.kuzu_internal_id_t`
+- Composite
+  - List/Array → `[]T` via `Row.get([]T, ...)` (recursive)
+  - Map → `[]struct { key: K, value: V }`
+  - Struct/Union → matching Zig struct with identical field names
+  - Graph types → `Value.asNode()/asRel()/asRecursiveRel()` with helpers for labels/properties
 
 ## Troubleshooting
 

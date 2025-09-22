@@ -195,3 +195,49 @@ test "getDouble alias and timestamp tz getter" {
         try std.testing.expectEqual(tz.value, tz_out.value);
     }
 }
+
+test "extra conversions and invalid columns" {
+    const a = std.testing.allocator;
+    _ = try std.fs.cwd().makeOpenPath("zig-cache/zkuzu-qr-extra", .{});
+    const db_path = try zkuzu.toCString(a, "zig-cache/zkuzu-qr-extra/db");
+    defer a.free(db_path);
+
+    var db = try zkuzu.open(db_path, null);
+    defer db.deinit();
+    var conn = try db.connection();
+    defer conn.deinit();
+
+    var qr = try conn.query(
+        "RETURN 70000 AS big, -1 AS neg, 32768 AS big16, 65535 AS u16max, 4294967296 AS over_u32, 'hello' AS s, CAST(NULL AS STRING) AS ns",
+    );
+    defer qr.deinit();
+
+    const row_opt = try qr.next();
+    try std.testing.expect(row_opt != null);
+    const row = row_opt.?;
+    defer row.deinit();
+
+    // Overflow and negative-to-unsigned should fail
+    try std.testing.expectError(zkuzu.Error.ConversionError, row.get(u16, 0)); // 70000
+    try std.testing.expectError(zkuzu.Error.ConversionError, row.get(u16, 1)); // -1
+    try std.testing.expectError(zkuzu.Error.ConversionError, row.get(i16, 2)); // 32768
+
+    // Safe casts
+    try std.testing.expectEqual(@as(u32, 65535), try row.get(u32, 3));
+    try std.testing.expectEqual(@as(i32, 65535), try row.get(i32, 3));
+
+    // Too large for u32
+    try std.testing.expectError(zkuzu.Error.ConversionError, row.get(u32, 4));
+
+    // Invalid name → InvalidColumn
+    try std.testing.expectError(zkuzu.Error.InvalidColumn, row.getByName(i64, "missing"));
+
+    // OOB numeric index → Unknown (propagated from C state)
+    try std.testing.expectError(zkuzu.Error.Unknown, row.get(i64, 99));
+
+    // copyString returns owned copy; null becomes null
+    const scopy = try row.copyString(a, 5) orelse return error.Missing;
+    defer a.free(scopy);
+    try std.testing.expectEqualStrings("hello", scopy);
+    try std.testing.expectEqual(@as(?[]u8, null), try row.copyString(a, 6));
+}
