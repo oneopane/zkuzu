@@ -25,6 +25,7 @@ pub const checkState = errors.checkState;
 pub const toCString = strings.toCString;
 
 pub const Pool = @import("pool.zig").Pool;
+pub const Transaction = @import("pool.zig").Transaction;
 
 /// Open or create a database at `path` using an optional `SystemConfig`.
 ///

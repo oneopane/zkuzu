@@ -2,6 +2,7 @@ const std = @import("std");
 const zkuzu = @import("zkuzu");
 
 pub fn main() !void {
+    _ = try std.fs.cwd().makeOpenPath("zig-cache/zkuzu-example-perf", .{});
     var db = try zkuzu.open("zig-cache/zkuzu-example-perf/db", null);
     defer db.deinit();
     var conn = try db.connection();
@@ -12,7 +13,7 @@ pub fn main() !void {
     try conn.setTimeout(10_000); // 10s
 
     // Schema
-    _ = try conn.query("CREATE NODE TABLE IF NOT EXISTS Log(id INT64, msg STRING, PRIMARY KEY(id))");
+    try conn.exec("CREATE NODE TABLE IF NOT EXISTS Log(id INT64, msg STRING, PRIMARY KEY(id))");
 
     // Use prepared statements for bulk inserts (reduces parsing/binding cost)
     var ps = try conn.prepare("MERGE (:Log {id: $id, msg: $msg})");

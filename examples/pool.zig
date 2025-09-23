@@ -6,6 +6,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
+    _ = try std.fs.cwd().makeOpenPath("zig-cache/zkuzu-example-pool", .{});
     var db = try zkuzu.open("zig-cache/zkuzu-example-pool/db", null);
     defer db.deinit();
 
@@ -19,7 +20,7 @@ pub fn main() !void {
     // Insert with withTransaction (auto-commit on success)
     const TxR = zkuzu.Error || error{PoolExhausted};
     _ = try pool.withTransaction(TxR!void, .{}, struct {
-        fn run(tx: *zkuzu.Pool.Transaction, _: @TypeOf(.{})) TxR!void {
+        fn run(tx: *zkuzu.Transaction, _: @TypeOf(.{})) TxR!void {
             try tx.exec("MERGE (:Item {id: 1})");
             try tx.exec("MERGE (:Item {id: 2})");
             return;

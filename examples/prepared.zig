@@ -18,7 +18,6 @@ pub fn main() !void {
     defer ps.deinit();
     try ps.bindInt("min_age", 26);
     var qr = try ps.execute();
-    defer qr.deinit();
 
     std.debug.print("People older than 26:\n", .{});
     while (try qr.next()) |row_val| {
@@ -28,6 +27,8 @@ pub fn main() !void {
         const age = try row.getByName(i64, "age");
         std.debug.print("- {s} ({d})\n", .{ name, age });
     }
+    // Ensure the result is closed before preparing/executing another statement
+    qr.deinit();
 
     // Typed temporals
     const ts: zkuzu.c.kuzu_timestamp_t = .{ .value = 1612137600000 };
